@@ -1,0 +1,30 @@
+# secrets — never commit
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# dependencies and build output
+node_modules/
+dist/
+.next/
+out/
+*.tsbuildinfo
+
+# generated prisma client
+api/generated/
+
+# family photos and generated images live outside git
+data/
+
+# local notes
+BUILD-LOG.md
+README.local.md
+
+# editor / os
+.DS_Store
+.vscode/
+.idea/
+*.log

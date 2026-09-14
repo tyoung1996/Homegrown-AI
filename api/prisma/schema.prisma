@@ -1,0 +1,99 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  ADULT
+  CHILD
+}
+
+model User {
+  id            String           @id @default(cuid())
+  username      String           @unique
+  displayName   String
+  passwordHash  String
+  role          Role             @default(CHILD)
+  createdAt     DateTime         @default(now())
+  conversations Conversation[]
+  images        ImageGeneration[]
+  memories      Memory[]
+}
+
+// saved people for the Studio — a named reference photo the image models
+// can use to put that person into new scenes; shared with the whole family
+model Person {
+  id          String        @id @default(cuid())
+  name        String
+  description String?       // one-line look description the vision model writes, used in prompts
+  imagePath   String        // primary reference photo
+  createdBy   String
+  createdAt   DateTime      @default(now())
+  photos      PersonPhoto[]
+}
+
+// extra reference angles for a person — more photos, better likeness
+model PersonPhoto {
+  id        String   @id @default(cuid())
+  personId  String
+  person    Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  imagePath String
+  createdAt DateTime @default(now())
+}
+
+// app-wide settings, e.g. which chat model is active
+model Setting {
+  key   String @id
+  value String
+}
+
+// long-term memory; rows with no userId are shared family-wide
+model Memory {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content   String
+  createdAt DateTime @default(now())
+}
+
+model Conversation {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String    @default("New chat")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  messages  Message[]
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String
+  content        String
+  imagePath      String?
+  createdAt      DateTime     @default(now())
+}
+
+model ImageGeneration {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  prompt    String
+  status    String   @default("pending")
+  filePath  String?
+  createdAt DateTime @default(now())
+}
+
+model InstalledModel {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  sizeBytes BigInt?
+  addedAt   DateTime @default(now())
+}

@@ -1,0 +1,175 @@
+@import "tailwindcss";
+
+/* ── palette: warm dark timber, barn red, cream ink ───────────────── */
+:root {
+  --paper: #171411;
+  --paper-2: #1e1a16;
+  --card: #262119;
+  --line: #352e27;
+  --line-2: #4b4137;
+  --ink: #efe7da;
+  --ink-2: #b6a999;
+  --muted: #7f7366;
+  --red: #d0553f;
+  --red-2: #b3402f;
+  --red-soft: #3b201a;
+  --sage: #9db08c;
+  --sage-soft: #27311f;
+  --gold: #d9ad4a;
+  --gold-soft: #3a2f14;
+}
+
+@theme {
+  --font-sans: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-display), Georgia, serif;
+  --color-paper: var(--paper);
+  --color-paper-2: var(--paper-2);
+  --color-card: var(--card);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-red: var(--red);
+  --color-red-2: var(--red-2);
+  --color-red-soft: var(--red-soft);
+  --color-sage: var(--sage);
+  --color-sage-soft: var(--sage-soft);
+  --color-gold: var(--gold);
+  --color-gold-soft: var(--gold-soft);
+}
+
+html { color-scheme: dark; }
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+
+h1, h2, h3, .display {
+  font-family: var(--font-display);
+  letter-spacing: -0.005em;
+}
+
+/* faint circuit trace on the timber, red ink, barely there */
+.circuit-bg {
+  background-color: var(--paper);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'%3E%3Cg stroke='%23d0553f' stroke-opacity='.10' fill='none'%3E%3Cpath d='M10 35h40v45h50'/%3E%3Cpath d='M130 20v35H85'/%3E%3Cpath d='M25 130V95h55'/%3E%3C/g%3E%3Cg fill='%23d0553f' fill-opacity='.16'%3E%3Ccircle cx='10' cy='35' r='2'/%3E%3Ccircle cx='100' cy='80' r='2'/%3E%3Ccircle cx='130' cy='20' r='2'/%3E%3Ccircle cx='85' cy='55' r='2'/%3E%3Ccircle cx='25' cy='130' r='2'/%3E%3Ccircle cx='80' cy='95' r='2'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+/* ── shared pieces ────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+  background: var(--red); color: #fff;
+  border: 1px solid var(--red-2);
+  border-radius: 6px; padding: .55rem 1rem;
+  font-weight: 600; font-size: .875rem; line-height: 1.2;
+  transition: background .12s;
+}
+.btn:hover { background: var(--red-2); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+
+.btn-ghost {
+  display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+  background: transparent; color: var(--ink);
+  border: 1px solid var(--line-2);
+  border-radius: 6px; padding: .55rem 1rem;
+  font-weight: 600; font-size: .875rem; line-height: 1.2;
+  transition: background .12s, border-color .12s;
+}
+.btn-ghost:hover { background: var(--card); border-color: var(--ink-2); }
+.btn-ghost:disabled { opacity: .45; cursor: not-allowed; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.field {
+  width: 100%;
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  padding: .6rem .8rem;
+  color: var(--ink);
+  outline: none;
+  transition: border-color .12s, box-shadow .12s;
+}
+.field::placeholder { color: var(--muted); }
+.field:focus { border-color: var(--red); box-shadow: 0 0 0 3px var(--red-soft); }
+
+.eyebrow {
+  font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--muted);
+}
+
+.chip {
+  display: inline-flex; align-items: center; gap: .4rem;
+  border: 1px solid var(--line-2); border-radius: 999px;
+  padding: .35rem .75rem; font-size: .8125rem; color: var(--ink-2);
+  background: transparent; transition: all .12s;
+}
+.chip:hover { border-color: var(--ink-2); color: var(--ink); }
+.chip.on { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+
+.badge {
+  display: inline-block; border-radius: 4px; padding: 1px 6px;
+  font-size: 10px; font-weight: 700; letter-spacing: .08em;
+}
+.badge-admin { background: var(--gold-soft); color: var(--gold); }
+.badge-adult { background: var(--sage-soft); color: var(--sage); }
+.badge-child { background: var(--red-soft); color: var(--red); }
+
+/* messages slide up as they arrive */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.msg-in { animation: rise .2s ease-out; }
+
+@keyframes shimmer {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(400%); }
+}
+
+@keyframes blink { 50% { opacity: 0; } }
+.stream-cursor::after {
+  content: "▍"; color: var(--red);
+  animation: blink 1s step-start infinite;
+}
+
+/* markdown in replies */
+.md-body { line-height: 1.65; overflow-wrap: anywhere; }
+.md-body > *:first-child { margin-top: 0; }
+.md-body > *:last-child { margin-bottom: 0; }
+.md-body p { margin: .5rem 0; }
+.md-body h1, .md-body h2, .md-body h3 { font-weight: 700; margin: .9rem 0 .4rem; }
+.md-body h1 { font-size: 1.15rem; }
+.md-body h2 { font-size: 1.05rem; }
+.md-body h3 { font-size: 1rem; }
+.md-body ul { list-style: disc; padding-left: 1.3rem; margin: .5rem 0; }
+.md-body ol { list-style: decimal; padding-left: 1.3rem; margin: .5rem 0; }
+.md-body li { margin: .2rem 0; }
+.md-body a { color: var(--red); text-decoration: underline; text-underline-offset: 2px; }
+.md-body strong { color: var(--ink); }
+.md-body code {
+  background: var(--paper-2); border: 1px solid var(--line);
+  border-radius: 4px; padding: .1rem .35rem; font-size: .85em;
+}
+.md-body pre {
+  background: var(--paper); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 6px; padding: .75rem 1rem; overflow-x: auto; margin: .6rem 0;
+}
+.md-body pre code { background: none; border: none; padding: 0; color: inherit; }
+.md-body blockquote {
+  border-left: 3px solid var(--red); padding-left: .8rem; color: var(--ink-2); margin: .5rem 0;
+}
+.md-body table { border-collapse: collapse; margin: .6rem 0; display: block; overflow-x: auto; }
+.md-body th, .md-body td { border: 1px solid var(--line); padding: .35rem .7rem; font-size: .9em; }
+.md-body th { background: var(--paper-2); }
+
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 4px; }
+*::-webkit-scrollbar-track { background: transparent; }
