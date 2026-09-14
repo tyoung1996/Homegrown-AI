@@ -75,6 +75,12 @@ EOF
   ok "database created, api/.env written"
 fi
 
+say "Fonts for printing words on pictures"
+mkdir -p "$HOME/.local/share/fonts"
+cp "$ROOT/api/assets/fonts/"*.ttf "$HOME/.local/share/fonts/" 2>/dev/null || true
+command -v fc-cache >/dev/null && fc-cache -f >/dev/null 2>&1 || true
+ok "Fredoka, Bangers (OFL)"
+
 say "Building the API"
 cd "$ROOT/api"
 npm install --no-audit --no-fund >/dev/null

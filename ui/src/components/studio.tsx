@@ -65,10 +65,19 @@ export function Studio({
   const [personId, setPersonId] = useState<string | null>(null);
   const [style, setStyle] = useState('photo');
   const [prompt, setPrompt] = useState('');
+  const [title, setTitle] = useState('');
+  const [details, setDetails] = useState('');
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState('');
   const [result, setResult] = useState<string | null>(null);
-  const [lastRun, setLastRun] = useState<{ prompt: string; personId: string | null; style: string; quality: string } | null>(null);
+  const [lastRun, setLastRun] = useState<{
+    prompt: string;
+    personId: string | null;
+    style: string;
+    quality: string;
+    title: string;
+    details: string;
+  } | null>(null);
   const [error, setError] = useState('');
   const [addingPerson, setAddingPerson] = useState(false);
   const [managing, setManaging] = useState<Person | null>(null);
@@ -155,10 +164,15 @@ export function Studio({
     }
   }
 
-  async function generate(quality: 'fast' | 'best', overrides?: { prompt: string; personId: string | null; style: string }) {
+  async function generate(
+    quality: 'fast' | 'best',
+    overrides?: { prompt: string; personId: string | null; style: string; title: string; details: string },
+  ) {
     const p = (overrides?.prompt ?? prompt).trim();
     const who = overrides ? overrides.personId : personId;
     const st = overrides?.style ?? style;
+    const tt = (overrides?.title ?? title).trim();
+    const dd = (overrides?.details ?? details).trim();
     if (!p || busy) return;
     setBusy(true);
     setError('');
@@ -167,7 +181,7 @@ export function Studio({
       const res = await fetch(`${apiBase()}/studio/generate/stream`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ prompt: p, personId: who ?? undefined, style: st, quality }),
+        body: JSON.stringify({ prompt: p, personId: who ?? undefined, style: st, quality, title: tt, details: dd }),
       });
       if (!res.ok || !res.body) throw new Error(`Request failed (${res.status})`);
       const reader = res.body.getReader();
@@ -186,7 +200,7 @@ export function Studio({
           if (ev.type === 'stage') setStage(ev.text);
           else if (ev.type === 'image') {
             setResult(`${apiBase()}${ev.url}`);
-            setLastRun({ prompt: p, personId: who, style: st, quality });
+            setLastRun({ prompt: p, personId: who, style: st, quality, title: tt, details: dd });
           } else if (ev.type === 'error') throw new Error(ev.message);
         }
       }
@@ -286,7 +300,28 @@ export function Studio({
                 placeholder={selected ? 'riding a dragon over a castle at sunset…' : 'a cozy cabin in a snowy forest at night…'}
                 className="field resize-none"
               />
-              <button onClick={() => generate('fast')} disabled={busy || !prompt.trim()} className="btn mt-2 w-full">
+              <p className="mt-1.5 text-xs text-muted">
+                Describe the picture only — the AI can&apos;t spell. Put any words below and they get printed on properly.
+              </p>
+            </section>
+
+            <section>
+              <p className="eyebrow mb-2">Words on the picture <span className="normal-case tracking-normal text-muted">(optional — invitations, posters, cards)</span></p>
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Big title — e.g. Levi is turning 5!"
+                maxLength={60}
+                className="field mb-2"
+              />
+              <input
+                value={details}
+                onChange={(e) => setDetails(e.target.value)}
+                placeholder="Details — e.g. Saturday June 7 · 2pm · our house"
+                maxLength={120}
+                className="field"
+              />
+              <button onClick={() => generate('fast')} disabled={busy || !prompt.trim()} className="btn mt-3 w-full">
                 {busy ? 'Working…' : 'Create'}
               </button>
               <p className="mt-1.5 text-xs text-muted">
