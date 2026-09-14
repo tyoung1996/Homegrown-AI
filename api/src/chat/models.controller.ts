@@ -17,6 +17,7 @@ import * as os from 'os';
 import { statfsSync } from 'fs';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PrismaService } from '../prisma.service';
+import { startEventStream } from './chat.controller';
 
 const run = promisify(exec);
 const OLLAMA = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
@@ -143,9 +144,7 @@ export class ModelsController {
       res.status(400).json({ message: 'Not in the library' });
       return;
     }
-    res.setHeader('content-type', 'text/event-stream');
-    res.setHeader('cache-control', 'no-cache');
-    res.flushHeaders?.();
+    startEventStream(res);
     const emit = (ev: unknown) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
     try {
       const pull = await fetch(`${OLLAMA}/api/pull`, {

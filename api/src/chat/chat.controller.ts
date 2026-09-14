@@ -20,6 +20,19 @@ class SendDto {
   @IsOptional() @IsString() imageData?: string; // data-url of an attached photo
 }
 
+// server-sent events that survive proxies (cloudflare, tunnels, nginx):
+// no-transform stops compression, x-accel-buffering stops nginx-style
+// buffering, and a 4kb comment up front pushes the stream past the buffer
+// threshold so the first real event isn't held back
+export function startEventStream(res: Response) {
+  res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+  res.setHeader('cache-control', 'no-cache, no-transform');
+  res.setHeader('connection', 'keep-alive');
+  res.setHeader('x-accel-buffering', 'no');
+  res.flushHeaders?.();
+  res.write(`: ${' '.repeat(4096)}\n\n`);
+}
+
 @UseGuards(JwtAuthGuard)
 @Controller()
 export class ChatController {
@@ -47,10 +60,7 @@ export class ChatController {
 
   @Post('chat/stream')
   async stream(@Req() req: any, @Body() dto: SendDto, @Res() res: Response) {
-    res.setHeader('content-type', 'text/event-stream');
-    res.setHeader('cache-control', 'no-cache');
-    res.setHeader('connection', 'keep-alive');
-    res.flushHeaders?.();
+    startEventStream(res);
     const emit = (ev: unknown) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
     try {
       await this.chat.sendStream(

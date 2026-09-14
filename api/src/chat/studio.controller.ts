@@ -19,6 +19,7 @@ import * as path from 'path';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PrismaService } from '../prisma.service';
 import { ComfyService, IMAGES_DIR, Quality } from './comfy.service';
+import { startEventStream } from './chat.controller';
 
 const OLLAMA = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
 const VISION_MODEL = process.env.VISION_MODEL ?? 'qwen2.5vl:7b';
@@ -144,9 +145,7 @@ export class StudioController {
   // streams progress stages, then the finished image
   @Post('generate/stream')
   async generateStream(@Req() req: any, @Body() body: any, @Res() res: Response) {
-    res.setHeader('content-type', 'text/event-stream');
-    res.setHeader('cache-control', 'no-cache');
-    res.flushHeaders?.();
+    startEventStream(res);
     const emit = (ev: unknown) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
     try {
       const url = await this.generateImage(req.user.userId, body, (text) => emit({ type: 'stage', text }));

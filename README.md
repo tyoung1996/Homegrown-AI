@@ -43,17 +43,32 @@ Installs ComfyUI with the image model, identity tools (InstantID + ReActor), and
 
 ### Use it away from home
 
-The whole app runs on one port (3000 — the UI proxies the API), so it sits behind anything. The dead-simple option is [Tailscale Funnel](https://tailscale.com/kb/1223/funnel): a real `https://` address, nothing to install on anyone's phone, no port forwarding, no router changes. Family members just bookmark the link and log in.
+The whole app runs on one port (3000 — the UI proxies the API), so it sits behind anything. Three ways in, all without opening a port on your router:
+
+**Own a domain? Cloudflare Tunnel (recommended — nothing to install on any phone).** Put the domain's DNS on Cloudflare (free plan), then on the server:
 
 ```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up --hostname circuit-barn     # approve the login link it prints
-sudo tailscale funnel --bg 3000               # first time: it prints a link to enable Funnel on your account
+# install cloudflared (https://pkg.cloudflare.com), then:
+cloudflared tunnel login                       # approve in your browser, pick the domain
+cloudflared tunnel create circuit-barn
+cloudflared tunnel route dns circuit-barn ai.yourdomain.com
+sudo mkdir -p /etc/cloudflared && sudo cp ~/.cloudflared/*.json ~/.cloudflared/cert.pem /etc/cloudflared/
+sudo tee /etc/cloudflared/config.yml >/dev/null <<EOF
+tunnel: <the tunnel id from 'cloudflared tunnel list'>
+credentials-file: /etc/cloudflared/<that id>.json
+ingress:
+  - hostname: ai.yourdomain.com
+    service: http://localhost:3000
+  - service: http_status:404
+EOF
+sudo cloudflared service install && sudo systemctl enable --now cloudflared
 ```
 
-You get `https://circuit-barn.<your-tailnet>.ts.net`. The login page is reachable from the internet, so use real passwords — failed logins are rate-limited per account.
+`https://ai.yourdomain.com` now works from anywhere. The login page is on the internet, so use real passwords — failed logins are rate-limited per account.
 
-Prefer to keep it fully private instead? Skip the `funnel` line, install the Tailscale app on each device, and use `http://circuit-barn:3000`.
+**No domain? Tailscale Funnel** gives a free `https://<machine>.<tailnet>.ts.net` address the same way: `sudo tailscale funnel --bg 3000` (it prints a link to enable Funnel on your account the first time). Note: in our testing the public DNS record sometimes took a long time to appear.
+
+**Want it fully private?** Install the [Tailscale](https://tailscale.com) app on the server and on each device; `http://<machine>:3000` then works anywhere, and nothing is reachable from the open internet at all.
 
 ## How it's built
 
