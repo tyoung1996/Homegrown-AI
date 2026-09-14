@@ -26,6 +26,14 @@ const OLLAMA = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
 const VISION_MODEL = process.env.VISION_MODEL ?? 'qwen2.5vl:7b';
 const MAX_PHOTOS = 5;
 
+// print sizes: what the model renders (multiples of 64, close to the real
+// ratio) and the true 300-dpi pixel size the print endpoint upscales to
+export const CARD_SIZES: Record<string, { render: { width: number; height: number }; inches: [number, number] }> = {
+  square: { render: { width: 1024, height: 1024 }, inches: [5, 5] },
+  '4x6': { render: { width: 832, height: 1248 }, inches: [4, 6] },
+  '5x7': { render: { width: 896, height: 1280 }, inches: [5, 7] },
+};
+
 // swap = finish with a real face swap; only right for styles where a
 // photographic face belongs (it looks pasted-on in cartoon styles)
 const STYLES: Record<string, { prompt: string; swap: boolean }> = {
@@ -181,12 +189,24 @@ export class StudioController {
       if (!person) throw new BadRequestException('Unknown person');
     }
 
-    const title = String(body.title ?? '').trim().slice(0, 60);
-    const details = String(body.details ?? '').trim().slice(0, 120);
-    const wantsText = !!(title || details);
+    // words: a multi-line block (first line is the title); legacy title/details still work
+    const lines = String(body.words ?? [body.title, body.details].filter(Boolean).join('\n'))
+      .split('\n')
+      .map((l) => l.trim().slice(0, 80))
+      .filter(Boolean)
+      .slice(0, 8);
+    const wantsText = lines.length > 0;
+    const sizeKey = CARD_SIZES[String(body.size ?? 'square')] ? String(body.size) : 'square';
+    const card = CARD_SIZES[sizeKey];
 
     stage('Writing the prompt');
-    const expanded = await this.expandPrompt(idea, person?.description ?? null, style.prompt, wantsText);
+    const expanded = await this.expandPrompt(
+      idea,
+      person?.description ?? null,
+      style.prompt,
+      wantsText,
+      card.render.height > card.render.width,
+    );
     const fullPrompt = `${expanded}, ${style.prompt}`;
 
     let file: string;
@@ -198,15 +218,16 @@ export class StudioController {
         swap: style.swap,
         quality,
         personName: person.name,
+        size: card.render,
         onStage: (t) => stage(t === 'Matching the face' ? `Matching ${person!.name}` : t),
       });
     } else {
-      file = await this.comfy.generate(fullPrompt, quality, stage);
+      file = await this.comfy.generate(fullPrompt, quality, stage, card.render);
     }
 
     if (wantsText) {
       stage('Adding the words');
-      file = await this.writeWordsOn(file, title, details);
+      file = await this.writeWordsOn(file, lines, sizeKey !== 'square' || lines.length > 2);
     }
 
     await this.prisma.imageGeneration.create({
@@ -215,34 +236,56 @@ export class StudioController {
     return `/images/${file}`;
   }
 
-  // image models can't spell, so the server prints the words: a big title
-  // and a line of details on a soft band across the bottom of the picture
-  private async writeWordsOn(file: string, title: string, details: string): Promise<string> {
+  // image models can't spell, so the server prints the words. two looks:
+  // a soft dark band for a title and a line (social graphics), or a cream
+  // card panel for real invitations and rsvp cards with several lines,
+  // blanks (____) and checkboxes (☐)
+  private async writeWordsOn(file: string, lines: string[], panel: boolean): Promise<string> {
     const src = path.join(IMAGES_DIR, file);
     const image = sharp(src);
     const { width = 1024, height = 1024 } = await image.metadata();
     const esc = (s: string) =>
       s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    const bandH = Math.round(height * (details ? 0.24 : 0.17));
-    const titleSize = Math.round(Math.min(width / Math.max(6, title.length * 0.62), height * 0.11));
-    const detailSize = Math.round(Math.min(width / Math.max(12, details.length * 0.55), height * 0.045));
-    const svg = `
+    const FONT = 'Fredoka, Bangers, DejaVu Sans, sans-serif';
+    const [title, ...rest] = lines;
+    const longest = Math.max(1, ...rest.map((l) => l.length));
+    let svg: string;
+
+    if (!panel) {
+      const details = rest.join('  ·  ');
+      const bandH = Math.round(height * (details ? 0.24 : 0.17));
+      const titleSize = Math.round(Math.min(width / Math.max(6, title.length * 0.62), height * 0.11));
+      const detailSize = Math.round(Math.min(width / Math.max(12, details.length * 0.55), height * 0.045));
+      svg = `
 <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#000" stop-opacity="0"/>
-      <stop offset="0.35" stop-color="#000" stop-opacity="0.55"/>
-      <stop offset="1" stop-color="#000" stop-opacity="0.75"/>
-    </linearGradient>
-  </defs>
+  <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#000" stop-opacity="0"/><stop offset="0.35" stop-color="#000" stop-opacity="0.55"/><stop offset="1" stop-color="#000" stop-opacity="0.75"/>
+  </linearGradient></defs>
   <rect x="0" y="${height - bandH}" width="${width}" height="${bandH}" fill="url(#g)"/>
-  ${title ? `<text x="${width / 2}" y="${height - bandH + bandH * (details ? 0.5 : 0.62)}" text-anchor="middle"
-     font-family="Fredoka, Bangers, DejaVu Sans, sans-serif" font-weight="700" font-size="${titleSize}"
-     fill="#fff" stroke="#000" stroke-width="${Math.max(2, titleSize / 18)}" paint-order="stroke">${esc(title)}</text>` : ''}
-  ${details ? `<text x="${width / 2}" y="${height - bandH * 0.18}" text-anchor="middle"
-     font-family="Fredoka, DejaVu Sans, sans-serif" font-weight="600" font-size="${detailSize}"
-     fill="#fff" stroke="#000" stroke-width="${Math.max(1, detailSize / 20)}" paint-order="stroke">${esc(details)}</text>` : ''}
+  <text x="${width / 2}" y="${height - bandH + bandH * (details ? 0.5 : 0.62)}" text-anchor="middle" font-family="${FONT}" font-weight="700" font-size="${titleSize}" fill="#fff" stroke="#000" stroke-width="${Math.max(2, titleSize / 18)}" paint-order="stroke">${esc(title)}</text>
+  ${details ? `<text x="${width / 2}" y="${height - bandH * 0.18}" text-anchor="middle" font-family="${FONT}" font-weight="600" font-size="${detailSize}" fill="#fff" stroke="#000" stroke-width="${Math.max(1, detailSize / 20)}" paint-order="stroke">${esc(details)}</text>` : ''}
 </svg>`;
+    } else {
+      const margin = Math.round(width * 0.05);
+      const pad = Math.round(width * 0.045);
+      const titleSize = Math.round(Math.min(width * 0.085, (width * 0.9) / Math.max(6, title.length * 0.58)));
+      const lineSize = Math.round(Math.min(width * 0.042, (width * 0.86) / Math.max(10, longest * 0.5)));
+      const lineH = Math.round(lineSize * 1.55);
+      const panelH = pad * 2 + Math.round(titleSize * 1.25) + rest.length * lineH;
+      const top = height - margin - panelH;
+      const textLines = rest
+        .map((l, i) =>
+          `<text x="${width / 2}" y="${top + pad + Math.round(titleSize * 1.25) + (i + 1) * lineH - Math.round(lineH * 0.3)}" text-anchor="middle" font-family="${FONT}" font-weight="500" font-size="${lineSize}" fill="#2a2622">${esc(l)}</text>`,
+        )
+        .join('\n');
+      svg = `
+<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+  <rect x="${margin}" y="${top}" width="${width - margin * 2}" height="${panelH}" rx="${Math.round(width * 0.025)}" fill="#fbf6ec" fill-opacity="0.96" stroke="#b3402f" stroke-opacity="0.35" stroke-width="3"/>
+  <text x="${width / 2}" y="${top + pad + Math.round(titleSize * 0.95)}" text-anchor="middle" font-family="${FONT}" font-weight="700" font-size="${titleSize}" fill="#b3402f">${esc(title)}</text>
+  ${textLines}
+</svg>`;
+    }
+
     const out = `${randomUUID()}.png`;
     await image
       .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
@@ -258,15 +301,18 @@ export class StudioController {
     personDescription: string | null,
     styleHint: string,
     leaveRoomForText = false,
+    portrait = false,
   ): Promise<string> {
     const model = (await this.prisma.setting.findUnique({ where: { key: 'chat_model' } }))?.value
       ?? process.env.CHAT_MODEL ?? 'qwen3:8b';
     const who = personDescription
       ? `The main subject is a real person; describe them ONLY as "${personDescription}" — never invent a different look and never use a name.`
       : 'There is no specific real person; invent whatever subject fits. If the idea names a well-known character, describe that character\'s look concretely (colors, shape, outfit) so it is recognizable.';
-    const textRule = leaveRoomForText
-      ? ' This picture will have words printed on it afterwards: keep the bottom quarter of the frame simple and uncluttered, and never draw letters, words, signs, or banners.'
-      : ' Never draw letters or words.';
+    const textRule =
+      (leaveRoomForText
+        ? ' This picture will have words printed on it afterwards: keep the bottom third of the frame simple and uncluttered, and never draw letters, words, signs, or banners.'
+        : ' Never draw letters or words.') +
+      (portrait ? ' The frame is a tall portrait card; compose for that.' : '');
     try {
       const res = await fetch(`${OLLAMA}/api/chat`, {
         method: 'POST',

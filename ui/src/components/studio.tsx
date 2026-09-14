@@ -65,8 +65,8 @@ export function Studio({
   const [personId, setPersonId] = useState<string | null>(null);
   const [style, setStyle] = useState('photo');
   const [prompt, setPrompt] = useState('');
-  const [title, setTitle] = useState('');
-  const [details, setDetails] = useState('');
+  const [words, setWords] = useState('');
+  const [size, setSize] = useState<'square' | '4x6' | '5x7'>('square');
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState('');
   const [result, setResult] = useState<string | null>(null);
@@ -75,8 +75,9 @@ export function Studio({
     personId: string | null;
     style: string;
     quality: string;
-    title: string;
-    details: string;
+    words: string;
+    size: string;
+    file: string;
   } | null>(null);
   const [error, setError] = useState('');
   const [addingPerson, setAddingPerson] = useState(false);
@@ -166,13 +167,13 @@ export function Studio({
 
   async function generate(
     quality: 'fast' | 'best',
-    overrides?: { prompt: string; personId: string | null; style: string; title: string; details: string },
+    overrides?: { prompt: string; personId: string | null; style: string; words: string; size: string },
   ) {
     const p = (overrides?.prompt ?? prompt).trim();
     const who = overrides ? overrides.personId : personId;
     const st = overrides?.style ?? style;
-    const tt = (overrides?.title ?? title).trim();
-    const dd = (overrides?.details ?? details).trim();
+    const ww = (overrides?.words ?? words).trim();
+    const sz = overrides?.size ?? size;
     if (!p || busy) return;
     setBusy(true);
     setError('');
@@ -181,7 +182,7 @@ export function Studio({
       const res = await fetch(`${apiBase()}/studio/generate/stream`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ prompt: p, personId: who ?? undefined, style: st, quality, title: tt, details: dd }),
+        body: JSON.stringify({ prompt: p, personId: who ?? undefined, style: st, quality, words: ww, size: sz }),
       });
       if (!res.ok || !res.body) throw new Error(`Request failed (${res.status})`);
       const reader = res.body.getReader();
@@ -200,7 +201,7 @@ export function Studio({
           if (ev.type === 'stage') setStage(ev.text);
           else if (ev.type === 'image') {
             setResult(`${apiBase()}${ev.url}`);
-            setLastRun({ prompt: p, personId: who, style: st, quality, title: tt, details: dd });
+            setLastRun({ prompt: p, personId: who, style: st, quality, words: ww, size: sz, file: String(ev.url).split('/').pop() ?? '' });
           } else if (ev.type === 'error') throw new Error(ev.message);
         }
       }
@@ -306,21 +307,31 @@ export function Studio({
             </section>
 
             <section>
-              <p className="eyebrow mb-2">Words on the picture <span className="normal-case tracking-normal text-muted">(optional — invitations, posters, cards)</span></p>
-              <input
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="Big title — e.g. Levi is turning 5!"
-                maxLength={60}
-                className="field mb-2"
+              <p className="eyebrow mb-2">Words on the picture <span className="normal-case tracking-normal text-muted">(optional — first line is the title)</span></p>
+              <textarea
+                value={words}
+                onChange={(e) => setWords(e.target.value)}
+                rows={4}
+                placeholder={'Levi is turning 5!\nSaturday June 7 · 2pm · our house\nRSVP by June 1 · text Emilie'}
+                className="field resize-none text-sm"
               />
-              <input
-                value={details}
-                onChange={(e) => setDetails(e.target.value)}
-                placeholder="Details — e.g. Saturday June 7 · 2pm · our house"
-                maxLength={120}
-                className="field"
-              />
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                <button type="button" onClick={() => setWords((w) => (w ? w + '\n' : '') + 'Name: ____________________')} className="chip !py-1 text-xs">+ blank line</button>
+                <button type="button" onClick={() => setWords((w) => (w ? w + '\n' : '') + '☐ Will attend      ☐ Can\'t make it')} className="chip !py-1 text-xs">+ checkboxes</button>
+                <button type="button" onClick={() => setWords((w) => (w ? w + '\n' : '') + 'Number attending: ____')} className="chip !py-1 text-xs">+ number attending</button>
+              </div>
+            </section>
+
+            <section>
+              <p className="eyebrow mb-2">Size</p>
+              <div className="flex flex-wrap gap-2">
+                {([['square', 'Square', 'social, 5×5 print'], ['4x6', '4 × 6', 'rsvp card, postcard'], ['5x7', '5 × 7', 'invitation']] as const).map(([k, label, hint]) => (
+                  <button key={k} onClick={() => setSize(k)} className={`chip ${size === k ? 'on' : ''}`} title={hint}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1.5 text-xs text-muted">Print sizes come out as a 300-dpi PDF you can print at home or at a pharmacy kiosk.</p>
               <button onClick={() => generate('fast')} disabled={busy || !prompt.trim()} className="btn mt-3 w-full">
                 {busy ? 'Working…' : 'Create'}
               </button>
@@ -332,7 +343,10 @@ export function Studio({
           </div>
 
           <div>
-            <div className="card relative aspect-square w-full overflow-hidden">
+            <div
+              className="card relative w-full overflow-hidden"
+              style={{ aspectRatio: size === '4x6' ? '2 / 3' : size === '5x7' ? '5 / 7' : '1 / 1' }}
+            >
               {result && !busy && (
                 <a href={result} target="_blank" rel="noreferrer">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -362,7 +376,7 @@ export function Studio({
               )}
             </div>
             {result && !busy && lastRun && (
-              <div className="mt-3 flex items-center gap-2">
+              <div className="mt-3 flex flex-wrap items-center gap-2">
                 {lastRun.quality === 'fast' ? (
                   <button onClick={() => generate('best', lastRun)} className="btn">
                     Enhance
@@ -373,8 +387,14 @@ export function Studio({
                 <button onClick={() => generate('fast', lastRun)} className="btn-ghost">
                   Another take
                 </button>
+                <a href={`${apiBase()}/print/${lastRun.file}?size=${lastRun.size}&per=1`} className="btn-ghost" target="_blank" rel="noreferrer">
+                  Print PDF
+                </a>
+                <a href={`${apiBase()}/print/${lastRun.file}?size=${lastRun.size}&per=2`} className="btn-ghost" target="_blank" rel="noreferrer">
+                  2 per sheet
+                </a>
                 <span className="text-xs text-muted">
-                  {lastRun.quality === 'fast' ? 'Enhance takes about 2 minutes' : ''}
+                  {lastRun.quality === 'fast' ? 'Enhance first for a sharper print' : ''}
                 </span>
               </div>
             )}

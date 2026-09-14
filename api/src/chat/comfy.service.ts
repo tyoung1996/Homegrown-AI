@@ -19,12 +19,18 @@ const NEGATIVE =
   '(watermark, text, caption, logo, signature, stock photo, getty images:1.4), blurry, lowres, bad anatomy, deformed, extra people, duplicate, jpeg artifacts';
 
 export type Quality = 'fast' | 'best';
+export interface Size {
+  width: number;
+  height: number;
+}
 export interface SceneOpts {
   swap?: boolean;
   quality?: Quality;
   onStage?: (text: string) => void;
   personName?: string;
+  size?: Size;
 }
+const SQUARE: Size = { width: 1024, height: 1024 };
 
 // which stage label a comfy node maps to, for live progress
 const STAGE_BY_NODE: Record<string, string> = {
@@ -39,9 +45,14 @@ const STAGE_BY_NODE: Record<string, string> = {
 export class ComfyService {
   private log = new Logger('Comfy');
 
-  async generate(prompt: string, quality: Quality = 'fast', onStage?: (t: string) => void): Promise<string> {
+  async generate(
+    prompt: string,
+    quality: Quality = 'fast',
+    onStage?: (t: string) => void,
+    size: Size = SQUARE,
+  ): Promise<string> {
     await this.freeOllama();
-    const workflow = this.txt2img(prompt, quality);
+    const workflow = this.txt2img(prompt, quality, size);
     if (quality === 'best' && (await this.hasNode('FaceDetailer'))) {
       this.appendDetailer(workflow, '8', prompt, quality);
     }
@@ -79,11 +90,12 @@ export class ComfyService {
     // detailer). an instantid refinement pass in between was tried and
     // dropped: it tended to conjure a second copy of the person.
     // cartoon styles keep instantid driving the whole render.
+    const size = opts.size ?? SQUARE;
     let workflow: Record<string, any>;
     if (opts.swap && reactor) {
-      workflow = this.txt2img(prompt, quality);
+      workflow = this.txt2img(prompt, quality, size);
     } else if (instantId) {
-      workflow = this.instantId(prompt, uploaded, quality);
+      workflow = this.instantId(prompt, uploaded, quality, size);
     } else {
       workflow = this.photomaker(`portrait photo of a person photomaker ${prompt}`, uploaded[0], quality);
     }
@@ -256,13 +268,16 @@ export class ComfyService {
       : { steps: 9, cfg: 2, sampler_name: 'dpmpp_sde', scheduler: 'karras' };
   }
 
-  private base(prompt: string, quality: Quality) {
+  private base(prompt: string, quality: Quality, size: Size = SQUARE) {
     return {
       '4': {
         class_type: 'CheckpointLoaderSimple',
         inputs: { ckpt_name: quality === 'best' ? CKPT_BEST : CKPT_FAST },
       },
-      '5': { class_type: 'EmptyLatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
+      '5': {
+        class_type: 'EmptyLatentImage',
+        inputs: { width: size.width, height: size.height, batch_size: 1 },
+      },
       '6': { class_type: 'CLIPTextEncode', inputs: { text: prompt, clip: ['4', 1] } },
       '7': { class_type: 'CLIPTextEncode', inputs: { text: NEGATIVE, clip: ['4', 1] } },
       '8': { class_type: 'VAEDecode', inputs: { samples: ['3', 0], vae: ['4', 2] } },
@@ -270,8 +285,8 @@ export class ComfyService {
     } as Record<string, any>;
   }
 
-  private txt2img(prompt: string, quality: Quality) {
-    const w = this.base(prompt, quality);
+  private txt2img(prompt: string, quality: Quality, size: Size = SQUARE) {
+    const w = this.base(prompt, quality, size);
     w['3'] = {
       class_type: 'KSampler',
       inputs: {
@@ -288,8 +303,8 @@ export class ComfyService {
   }
 
   // several reference photos get batched so instantid averages the identity
-  private instantId(prompt: string, imageNames: string[], quality: Quality) {
-    const w = this.base(prompt, quality);
+  private instantId(prompt: string, imageNames: string[], quality: Quality, size: Size = SQUARE) {
+    const w = this.base(prompt, quality, size);
     imageNames.forEach((name, i) => {
       w[i === 0 ? '10' : `10_${i}`] = { class_type: 'LoadImage', inputs: { image: name } };
     });
