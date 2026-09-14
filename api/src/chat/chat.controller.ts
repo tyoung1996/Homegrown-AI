@@ -22,8 +22,10 @@ class SendDto {
 
 // server-sent events that survive proxies (cloudflare, tunnels, nginx):
 // no-transform stops compression, x-accel-buffering stops nginx-style
-// buffering, and a 4kb comment up front pushes the stream past the buffer
-// threshold so the first real event isn't held back
+// buffering, a 4kb comment up front pushes the stream past the buffer
+// threshold so the first real event isn't held back, and a heartbeat
+// comment every 10s keeps idle-timeouts away while a model loads or an
+// image renders (comments are ignored by the client)
 export function startEventStream(res: Response) {
   res.setHeader('content-type', 'text/event-stream; charset=utf-8');
   res.setHeader('cache-control', 'no-cache, no-transform');
@@ -31,6 +33,12 @@ export function startEventStream(res: Response) {
   res.setHeader('x-accel-buffering', 'no');
   res.flushHeaders?.();
   res.write(`: ${' '.repeat(4096)}\n\n`);
+  const beat = setInterval(() => {
+    if (!res.writableEnded) res.write(': ping\n\n');
+  }, 10_000);
+  const stop = () => clearInterval(beat);
+  res.on('close', stop);
+  res.on('finish', stop);
 }
 
 @UseGuards(JwtAuthGuard)

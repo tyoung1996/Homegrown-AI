@@ -8,6 +8,11 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [{ source: '/api/:path*', destination: `${API}/api/:path*` }];
   },
+  experimental: {
+    // image jobs and model downloads run for minutes; the default 30s would
+    // cut them off mid-stream
+    proxyTimeout: 15 * 60 * 1000,
+  },
 };
 
 export default nextConfig;
