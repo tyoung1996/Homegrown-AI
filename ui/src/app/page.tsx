@@ -19,7 +19,8 @@ type Msg = {
 };
 type AdminUser = User & { createdAt: string };
 
-const apiBase = () => `http://${window.location.hostname}:3001`;
+// same origin — next.js proxies /api to the nest api (see next.config.ts)
+const apiBase = () => '/api';
 
 function dropSession() {
   try {

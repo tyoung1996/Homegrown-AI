@@ -43,16 +43,17 @@ Installs ComfyUI with the image model, identity tools (InstantID + ReActor), and
 
 ### Use it away from home
 
-Install [Tailscale](https://tailscale.com) on the server and on your phone (free for personal use). No port forwarding, nothing exposed to the internet:
+The whole app runs on one port (3000 — the UI proxies the API), so it sits behind anything. The dead-simple option is [Tailscale Funnel](https://tailscale.com/kb/1223/funnel): a real `https://` address, nothing to install on anyone's phone, no port forwarding, no router changes. Family members just bookmark the link and log in.
 
 ```bash
 curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up --hostname circuit-barn
-sudo ufw allow in on tailscale0 to any port 3000 proto tcp
-sudo ufw allow in on tailscale0 to any port 3001 proto tcp
+sudo tailscale up --hostname circuit-barn     # approve the login link it prints
+sudo tailscale funnel --bg 3000               # first time: it prints a link to enable Funnel on your account
 ```
 
-Then `http://circuit-barn:3000` works from anywhere your phone has signal.
+You get `https://circuit-barn.<your-tailnet>.ts.net`. The login page is reachable from the internet, so use real passwords — failed logins are rate-limited per account.
+
+Prefer to keep it fully private instead? Skip the `funnel` line, install the Tailscale app on each device, and use `http://circuit-barn:3000`.
 
 ## How it's built
 

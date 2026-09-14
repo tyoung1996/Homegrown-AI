@@ -37,7 +37,7 @@ const FIT_BADGE: Record<string, [string, string]> = {
 };
 
 function apiBase() {
-  return `http://${window.location.hostname}:3001`;
+  return '/api';
 }
 
 async function api(path: string, opts: RequestInit = {}, token?: string | null) {

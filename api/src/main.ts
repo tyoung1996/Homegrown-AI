@@ -5,6 +5,7 @@ import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  app.setGlobalPrefix('api');
   app.enableCors({ origin: true });
   app.use(json({ limit: '30mb' })); // photo uploads come in as base64
 

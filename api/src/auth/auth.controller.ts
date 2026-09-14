@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Headers,
+  HttpException,
   Post,
   Req,
   UseGuards,
@@ -24,6 +25,30 @@ class RegisterDto {
   @IsIn(['ADMIN', 'ADULT', 'CHILD']) role: Role;
 }
 
+// the login page can be reachable from the internet (tailscale funnel), so
+// slow down password guessing. keyed on the account (10 failures / 15 min)
+// with a looser per-address cap, because behind the ui's proxy every visitor
+// can look like the same address and one bad actor must not lock out the house.
+const WINDOW = 15 * 60_000;
+const attempts = new Map<string, { n: number; until: number }>();
+function tooMany(key: string, limit: number) {
+  const a = attempts.get(key);
+  return !!a && a.n >= limit && Date.now() < a.until;
+}
+function checkLoginRate(ip: string, username: string) {
+  if (tooMany(`user:${username}`, 10) || tooMany(`ip:${ip}`, 60)) {
+    throw new HttpException('Too many attempts — try again in a few minutes', 429);
+  }
+}
+function noteLoginFailure(ip: string, username: string) {
+  const now = Date.now();
+  for (const key of [`user:${username}`, `ip:${ip}`]) {
+    const a = attempts.get(key);
+    if (!a || now > a.until) attempts.set(key, { n: 1, until: now + WINDOW });
+    else a.n += 1;
+  }
+}
+
 @Controller('auth')
 export class AuthController {
   constructor(private auth: AuthService) {}
@@ -34,8 +59,16 @@ export class AuthController {
   }
 
   @Post('login')
-  login(@Body() dto: LoginDto) {
-    return this.auth.login(dto.username.toLowerCase().trim(), dto.password);
+  async login(@Body() dto: LoginDto, @Req() req: any) {
+    const ip = String(req.headers['x-forwarded-for'] ?? req.ip ?? 'unknown').split(',')[0].trim();
+    const username = dto.username.toLowerCase().trim();
+    checkLoginRate(ip, username);
+    try {
+      return await this.auth.login(username, dto.password);
+    } catch (e) {
+      noteLoginFailure(ip, username);
+      throw e;
+    }
   }
 
   @Post('register')
