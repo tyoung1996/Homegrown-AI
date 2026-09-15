@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm';
 import { BarnMark } from '@/components/logo';
 import { ModelsPanel, SetupScreen } from '@/components/models-panel';
 import { Studio } from '@/components/studio';
+import { MemoryPanel } from '@/components/memory-panel';
 
 type User = { id: string; username: string; displayName: string; role: string };
 type Convo = { id: string; title: string; updatedAt: string };
@@ -73,6 +74,7 @@ export default function Home() {
   const [showAdmin, setShowAdmin] = useState(false);
   const [showModels, setShowModels] = useState(false);
   const [showStudio, setShowStudio] = useState(false);
+  const [showMemory, setShowMemory] = useState(false);
   const [server, setServer] = useState<{
     modelInstalled: boolean;
     visionAvailable: boolean;
@@ -338,6 +340,9 @@ export default function Home() {
           </div>
         </div>
         <div className="mt-2 flex gap-3 text-xs text-ink-2">
+          <button onClick={() => setShowMemory(true)} className="hover:text-red">
+            Memory
+          </button>
           <button onClick={() => setShowModels(true)} className="hover:text-red">
             Models
           </button>
@@ -472,6 +477,14 @@ export default function Home() {
 
       {showAdmin && token && (
         <AdminPanel token={token} me={user} onClose={() => setShowAdmin(false)} />
+      )}
+      {showMemory && token && (
+        <MemoryPanel
+          token={token}
+          isAdmin={user.role === 'ADMIN'}
+          displayName={user.displayName}
+          onClose={() => setShowMemory(false)}
+        />
       )}
       {showModels && token && (
         <ModelsPanel

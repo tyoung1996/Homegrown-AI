@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -87,5 +88,24 @@ export class ChatController {
   @Get('models')
   models() {
     return this.chat.listModels();
+  }
+
+  // what the assistant knows about you — see it, teach it, make it forget
+  @Get('memories')
+  memories(@Req() req: any) {
+    return this.chat.listMemories(req.user.userId);
+  }
+
+  @Post('memories')
+  addMemory(@Req() req: any, @Body() body: { content?: string; family?: boolean }) {
+    const content = String(body.content ?? '').trim();
+    if (!content) throw new BadRequestException('Write something to remember');
+    const family = !!body.family && req.user.role === 'ADMIN';
+    return this.chat.addMemory(req.user.userId, content, family);
+  }
+
+  @Delete('memories/:id')
+  forget(@Req() req: any, @Param('id') id: string) {
+    return this.chat.deleteMemory(req.user.userId, req.user.role, id);
   }
 }

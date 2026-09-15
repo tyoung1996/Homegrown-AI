@@ -21,6 +21,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PrismaService } from '../prisma.service';
 import { ComfyService, IMAGES_DIR, Quality } from './comfy.service';
 import { startEventStream } from './chat.controller';
+import { savePhoto } from './photos';
 
 const OLLAMA = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
 const VISION_MODEL = process.env.VISION_MODEL ?? 'qwen2.5vl:7b';
@@ -45,15 +46,7 @@ const STYLES: Record<string, { prompt: string; swap: boolean }> = {
   comic: { prompt: 'bold comic book illustration, ink outlines, halftone shading, dynamic', swap: false },
 };
 
-function saveDataUrl(dataUrl: string): Promise<string> {
-  const m = /^data:image\/(png|jpe?g|webp);base64,(.+)$/.exec(dataUrl);
-  if (!m) throw new BadRequestException('Not a usable image');
-  const name = `${randomUUID()}.${m[1] === 'jpeg' ? 'jpg' : m[1]}`;
-  return fs
-    .mkdir(IMAGES_DIR, { recursive: true })
-    .then(() => fs.writeFile(path.join(IMAGES_DIR, name), Buffer.from(m[2], 'base64')))
-    .then(() => name);
-}
+const saveDataUrl = (dataUrl: string) => savePhoto(dataUrl, 1536);
 
 @UseGuards(JwtAuthGuard)
 @Controller('studio')

@@ -4,12 +4,12 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { PrismaService } from '../prisma.service';
 import { ToolsService, TOOL_DEFS } from './tools.service';
 import { ComfyService, IMAGES_DIR } from './comfy.service';
+import { savePhoto } from './photos';
 
 const OLLAMA = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
 const MODEL = process.env.CHAT_MODEL ?? 'qwen3:8b';
@@ -109,17 +109,14 @@ export class ChatService {
     }
     emit({ type: 'meta', conversationId: convo.id });
 
-    // an attached photo gets written to disk and linked to the message
+    // an attached photo gets normalized, written to disk and linked to the message
     let uploadedImage: string | null = null;
     if (imageData) {
-      const m = /^data:image\/(png|jpe?g|webp);base64,(.+)$/.exec(imageData);
-      if (m) {
-        await fs.mkdir(IMAGES_DIR, { recursive: true });
-        uploadedImage = `${randomUUID()}.${m[1] === 'jpeg' ? 'jpg' : m[1]}`;
-        await fs.writeFile(
-          path.join(IMAGES_DIR, uploadedImage),
-          Buffer.from(m[2], 'base64'),
-        );
+      try {
+        uploadedImage = await savePhoto(imageData);
+      } catch (e: any) {
+        emit({ type: 'error', message: e.message ?? 'Could not read that photo' });
+        return;
       }
     }
 
@@ -144,7 +141,7 @@ export class ChatService {
     history.reverse();
 
     const messages: OllamaMsg[] = [
-      { role: 'system', content: await this.buildSystemPrompt(userId) },
+      { role: 'system', content: await this.buildSystemPrompt(userId, convo.id) },
       ...history.map((m) => ({ role: m.role, content: m.content })),
     ];
 
@@ -261,6 +258,102 @@ export class ChatService {
     });
     if (sources.size) emit({ type: 'sources', urls: [...sources].slice(0, 8) });
     emit({ type: 'done' });
+    // learn from the exchange in the background; never delays the reply
+    void this.reflect(userId, convo.id).catch((e) => this.log.warn(`reflect: ${e.message}`));
+  }
+
+  // after each reply: pull out durable facts about the person and keep a
+  // one-line summary of the conversation, so future chats start informed
+  private async reflect(userId: string, conversationId: string) {
+    const [recent, known] = await Promise.all([
+      this.prisma.message.findMany({
+        where: { conversationId },
+        orderBy: { createdAt: 'desc' },
+        take: 6,
+      }),
+      this.prisma.memory.findMany({ where: { userId }, select: { content: true } }),
+    ]);
+    if (recent.length < 2) return;
+    const excerpt = recent
+      .reverse()
+      .map((m) => `${m.role === 'user' ? 'USER' : 'ASSISTANT'}: ${m.content.slice(0, 600)}`)
+      .join('\n');
+    const knownList = known.map((k) => `- ${k.content}`).join('\n') || '(nothing yet)';
+    const res = await fetch(`${OLLAMA}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: await this.activeModel(),
+        stream: false,
+        think: false,
+        format: 'json',
+        options: { num_ctx: 8192, num_predict: 300, temperature: 0.2 },
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You maintain long-term memory for a family assistant. From the conversation excerpt, extract durable facts about the USER worth remembering in future conversations: their preferences, family members and pets, school or work, important dates, ongoing plans or situations. Skip trivia, one-off requests, and anything about the assistant. Do not repeat facts already known. Each fact is one short sentence that makes sense on its own. Also write a one-line summary (max 15 words) of what this conversation is about. ' +
+              `Already known:\n${knownList}\n` +
+              'Reply with JSON only: {"facts": ["..."], "summary": "..."}',
+          },
+          { role: 'user', content: excerpt },
+        ],
+      }),
+    });
+    if (!res.ok) return;
+    const data: any = await res.json();
+    let parsed: { facts?: unknown; summary?: unknown } = {};
+    try {
+      parsed = JSON.parse(data.message?.content ?? '{}');
+    } catch {
+      return;
+    }
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const existing = known.map((k) => norm(k.content));
+    const facts = Array.isArray(parsed.facts) ? parsed.facts : [];
+    let saved = 0;
+    for (const f of facts.slice(0, 3)) {
+      if (typeof f !== 'string') continue;
+      const fact = f.trim().slice(0, 200);
+      const n = norm(fact);
+      if (n.length < 8) continue;
+      if (existing.some((e) => e === n || e.includes(n) || n.includes(e))) continue;
+      await this.prisma.memory.create({ data: { content: fact, userId } });
+      existing.push(n);
+      saved++;
+    }
+    if (typeof parsed.summary === 'string' && parsed.summary.trim()) {
+      await this.prisma.conversation.update({
+        where: { id: conversationId },
+        data: { summary: parsed.summary.trim().slice(0, 120) },
+      });
+    }
+    if (saved) this.log.log(`learned ${saved} new fact(s) about ${userId}`);
+  }
+
+  listMemories(userId: string) {
+    return this.prisma.memory.findMany({
+      where: { OR: [{ userId }, { userId: null }] },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, content: true, userId: true, createdAt: true },
+    });
+  }
+
+  addMemory(userId: string, content: string, family: boolean) {
+    return this.prisma.memory.create({
+      data: { content: content.trim().slice(0, 200), userId: family ? null : userId },
+      select: { id: true, content: true, userId: true, createdAt: true },
+    });
+  }
+
+  async deleteMemory(userId: string, role: string, id: string) {
+    const m = await this.prisma.memory.findUnique({ where: { id } });
+    if (!m) return { ok: true };
+    if (m.userId !== userId && !(m.userId === null && role === 'ADMIN')) {
+      throw new NotFoundException('Not yours to forget');
+    }
+    await this.prisma.memory.delete({ where: { id } });
+    return { ok: true };
   }
 
   // messages that come with a photo go to the vision model; it either
@@ -294,6 +387,7 @@ export class ChatService {
         body: JSON.stringify({
           model: VISION_MODEL,
           stream: false,
+          options: { num_ctx: 8192 },
           messages: [
             {
               role: 'system',
@@ -376,31 +470,39 @@ export class ChatService {
     return { conversationId: convoId, reply };
   }
 
-  private async buildSystemPrompt(userId: string) {
-    const [user, memories, persona] = await Promise.all([
+  private async buildSystemPrompt(userId: string, currentConversationId?: string) {
+    const [user, mine, family, persona, recent] = await Promise.all([
       this.prisma.user.findUnique({ where: { id: userId } }),
-      this.prisma.memory.findMany({
-        where: { OR: [{ userId }, { userId: null }] },
-        orderBy: { createdAt: 'desc' },
-        take: 40,
-      }),
+      this.prisma.memory.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 60 }),
+      this.prisma.memory.findMany({ where: { userId: null }, orderBy: { createdAt: 'desc' }, take: 30 }),
       this.prisma.setting.findUnique({ where: { key: 'persona' } }),
+      this.prisma.conversation.findMany({
+        where: { userId, summary: { not: null }, ...(currentConversationId ? { id: { not: currentConversationId } } : {}) },
+        orderBy: { updatedAt: 'desc' },
+        take: 8,
+        select: { summary: true, updatedAt: true },
+      }),
     ]);
     let prompt = BASE_PROMPT + `\nToday's date is ${new Date().toDateString()}.`;
     // admins can shape the personality from the app without touching code
     if (persona?.value?.trim()) {
       prompt += `\n\nHouse rules from the admin (follow these):\n${persona.value.trim()}`;
     }
+    const name = user?.displayName ?? 'this person';
     if (user) {
-      prompt += `\nYou are talking to ${user.displayName} (${user.role.toLowerCase()} account).`;
+      prompt += `\nYou are talking to ${name} (${user.role.toLowerCase()} account).`;
     }
-    if (memories.length) {
-      // oldest first so newer facts naturally override older ones
-      const lines = memories
-        .reverse()
-        .map((m) => `- ${m.content}`)
-        .join('\n');
-      prompt += `\n\nYour memories (facts you saved in earlier chats — treat them as true):\n${lines}`;
+    // oldest first so newer facts naturally override older ones
+    if (family.length) {
+      prompt += `\n\nAbout the family and about you (treat as true):\n${family.reverse().map((m) => `- ${m.content}`).join('\n')}`;
+    }
+    if (mine.length) {
+      prompt += `\n\nWhat you know about ${name} (treat as true, use naturally, don't recite):\n${mine.reverse().map((m) => `- ${m.content}`).join('\n')}`;
+    }
+    if (recent.length) {
+      prompt += `\n\nRecent conversations with ${name}:\n${recent
+        .map((c) => `- ${c.updatedAt.toDateString()}: ${c.summary}`)
+        .join('\n')}`;
     }
     return prompt;
   }
@@ -459,6 +561,9 @@ export class ChatService {
         messages,
         stream: true,
         think: false,
+        // the default 4k window silently drops history once memories and
+        // tools are in the prompt; 8k fits comfortably on an 8GB card
+        options: { num_ctx: 8192 },
         ...(tools ? { tools } : {}),
       }),
     });
