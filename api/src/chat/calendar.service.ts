@@ -4,6 +4,26 @@ import { DateTime } from 'luxon';
 import * as chrono from 'chrono-node';
 import { PrismaService } from '../prisma.service';
 
+const MONTHS = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b/i;
+
+// the parser ignores a bare day of the month ("the 23rd", "the 5th of next
+// month"), so those become an explicit "September 23" first — this month if
+// the day hasn't passed, otherwise next month
+export function normalizeWhen(when: string, now: DateTime): string {
+  let s = when.trim();
+  if (MONTHS.test(s)) return s; // "June 7th", "the 7th of June" — already explicit
+  const nextMonth = /\bnext\s+month\b/i.test(s);
+  s = s.replace(/\bnext\s+month\b/i, '');
+  s = s.replace(/\b(?:on\s+)?(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)\b(?:\s+of)?/i, (_m, d: string) => {
+    const day = parseInt(d, 10);
+    if (day < 1 || day > 31) return _m;
+    let m = now;
+    if (nextMonth || day < now.day) m = now.plus({ months: 1 });
+    return `${m.toFormat('MMMM')} ${day}`;
+  });
+  return s.replace(/\s+/g, ' ').trim();
+}
+
 export interface EventInput {
   title: string;
   when?: string; // natural language, as the person said it: "Saturday at 10am"
@@ -42,12 +62,17 @@ export class CalendarService {
     // family's timezone, always looking forward
     if (input.when?.trim()) {
       const ref = DateTime.now().setZone(zone);
+      const text = normalizeWhen(input.when, ref);
       const [hit] = chrono.parse(
-        input.when,
+        text,
         { instant: ref.toJSDate(), timezone: zone },
         { forwardDate: true },
       );
-      if (hit) {
+      // a time alone ("9:00 AM") with other date-ish words we couldn't read
+      // must not silently become "tomorrow at 9" — better to ask
+      const datePart = !!hit && (hit.start.isCertain('day') || hit.start.isCertain('weekday'));
+      const leftover = hit ? text.replace(hit.text, '') : text;
+      if (hit && (datePart || !/\d|\b(next|last|this)\b/i.test(leftover))) {
         start = DateTime.fromJSDate(hit.start.date()).setZone(zone);
         allDay = allDay || !hit.start.isCertain('hour');
         if (hit.end) end = DateTime.fromJSDate(hit.end.date()).setZone(zone);

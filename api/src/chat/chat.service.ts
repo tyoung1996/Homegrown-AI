@@ -189,6 +189,7 @@ export class ChatService {
           let result = '';
           if (name === 'add_event') {
             emit({ type: 'status', text: 'Adding it to the family calendar' });
+            this.log.log(`add_event ${JSON.stringify(args)}`);
             try {
               const ev = await this.calendar.add(userId, {
                 title: String(args.title ?? ''),
