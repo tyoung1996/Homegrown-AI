@@ -26,7 +26,8 @@ export function normalizeWhen(when: string, now: DateTime): string {
 
 export interface EventInput {
   title: string;
-  when?: string; // natural language, as the person said it: "Saturday at 10am"
+  sourceText?: string; // the person's whole message — the ground truth for dates
+  when?: string; // the model's version of the date words (it sometimes rewrites them wrongly)
   start?: string; // or a local wall-clock ISO, e.g. 2026-09-20T10:00 / 2026-09-20 for all-day
   end?: string;
   allDay?: boolean;
@@ -57,26 +58,21 @@ export class CalendarService {
     let end: DateTime | null = null;
     let allDay = !!input.allDay;
 
-    // small models are bad at calendar arithmetic ("Saturday" → wrong day), so
-    // the person's own words are parsed here, relative to right now in the
-    // family's timezone, always looking forward
-    if (input.when?.trim()) {
-      const ref = DateTime.now().setZone(zone);
-      const text = normalizeWhen(input.when, ref);
-      const [hit] = chrono.parse(
-        text,
-        { instant: ref.toJSDate(), timezone: zone },
-        { forwardDate: true },
-      );
-      // a time alone ("9:00 AM") with other date-ish words we couldn't read
-      // must not silently become "tomorrow at 9" — better to ask
-      const datePart = !!hit && (hit.start.isCertain('day') || hit.start.isCertain('weekday'));
-      const leftover = hit ? text.replace(hit.text, '') : text;
-      if (hit && (datePart || !/\d|\b(next|last|this)\b/i.test(leftover))) {
-        start = DateTime.fromJSDate(hit.start.date()).setZone(zone);
-        allDay = allDay || !hit.start.isCertain('hour');
-        if (hit.end) end = DateTime.fromJSDate(hit.end.date()).setZone(zone);
+    // small models are bad with dates: they miscount weekdays and sometimes
+    // rewrite "the 23rd" into a wrong explicit date. so the person's own
+    // message is parsed first and wins whenever it contains a date; the
+    // model's version is only a fallback.
+    const ref = DateTime.now().setZone(zone);
+    const fromMessage = input.sourceText ? this.resolve(input.sourceText, ref, zone, input.when) : null;
+    const fromModel = input.when ? this.resolve(input.when, ref, zone) : null;
+    const pick = fromMessage?.hasDate ? fromMessage : fromModel?.hasDate ? fromModel : fromMessage ?? fromModel;
+    if (pick) {
+      if (!pick.hasDate && pick.ambiguous) {
+        throw new BadRequestException('Which day is that? I found a time but no date.');
       }
+      start = pick.start;
+      end = pick.end;
+      allDay = allDay || pick.allDay;
     }
     if (!start && input.start) {
       allDay = allDay || /^\d{4}-\d{2}-\d{2}$/.test(String(input.start));
@@ -103,6 +99,50 @@ export class CalendarService {
         createdBy,
       },
     });
+  }
+
+  // parse a piece of text into one start/end. the parser often splits
+  // "at 9:00 AM on September 23" into a time hit and a date hit, so hits
+  // get merged: the date from a day-certain hit, the clock from an hour-
+  // certain one. when the text holds several dates (two events in one
+  // sentence), `hint` — the model's words for this event — picks the one
+  // whose text overlaps it best.
+  private resolve(raw: string, ref: DateTime, zone: string, hint?: string) {
+    const text = normalizeWhen(raw, ref);
+    const hits = chrono.parse(text, { instant: ref.toJSDate(), timezone: zone }, { forwardDate: true });
+    if (!hits.length) return null;
+    const dated = hits.filter((h) => h.start.isCertain('day') || h.start.isCertain('weekday'));
+    const timed = hits.filter((h) => h.start.isCertain('hour'));
+    const overlap = (a: string, b: string) => {
+      const ta = new Set(a.toLowerCase().match(/[a-z0-9:]+/g) ?? []);
+      return (b.toLowerCase().match(/[a-z0-9:]+/g) ?? []).filter((w) => ta.has(w)).length;
+    };
+    let dateHit = dated[0] ?? null;
+    if (dated.length > 1 && hint) {
+      dateHit = [...dated].sort((a, b) => overlap(hint, b.text) - overlap(hint, a.text))[0];
+    }
+    // the clock that belongs to this date: same hit if it has one, else the
+    // nearest time-only hit in the text
+    let timeHit = dateHit && dateHit.start.isCertain('hour') ? dateHit : null;
+    if (!timeHit && timed.length) {
+      const pos = dateHit ? dateHit.index : 0;
+      timeHit = [...timed].sort((a, b) => Math.abs(a.index - pos) - Math.abs(b.index - pos))[0];
+    }
+    const base = dateHit ?? timeHit ?? hits[0];
+    let start = DateTime.fromJSDate(base.start.date()).setZone(zone);
+    if (dateHit && timeHit && timeHit !== dateHit) {
+      const t = DateTime.fromJSDate(timeHit.start.date()).setZone(zone);
+      start = start.set({ hour: t.hour, minute: t.minute, second: 0, millisecond: 0 });
+    }
+    const allDay = !timeHit;
+    let end: DateTime | null = null;
+    const endSrc = timeHit?.end ?? dateHit?.end ?? null;
+    if (endSrc) end = DateTime.fromJSDate(endSrc.date()).setZone(zone);
+    // digits or "next/this" left over that no hit covered = something we
+    // failed to read, so a bare time shouldn't be trusted
+    const leftover = hits.reduce((s, h) => s.replace(h.text, ''), text);
+    const ambiguous = /\d|\b(next|last|this)\b/i.test(leftover);
+    return { start, end, allDay, hasDate: !!dateHit, ambiguous };
   }
 
   async list(fromISO?: string, toISO?: string) {

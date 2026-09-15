@@ -193,6 +193,7 @@ export class ChatService {
             try {
               const ev = await this.calendar.add(userId, {
                 title: String(args.title ?? ''),
+                sourceText: message,
                 when: args.when ? String(args.when) : undefined,
                 start: args.start ? String(args.start) : undefined,
                 end: args.end ? String(args.end) : undefined,
