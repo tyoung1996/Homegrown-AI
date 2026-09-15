@@ -46,6 +46,21 @@ model PersonPhoto {
   createdAt DateTime @default(now())
 }
 
+// the shared family calendar — anyone in the house can add to it, and the
+// assistant adds to it from chat
+model Event {
+  id        String    @id @default(cuid())
+  title     String
+  startsAt  DateTime
+  endsAt    DateTime?
+  allDay    Boolean   @default(false)
+  location  String?
+  notes     String?
+  who       String?   // free text: "Levi", "everyone"
+  createdBy String
+  createdAt DateTime  @default(now())
+}
+
 // app-wide settings, e.g. which chat model is active
 model Setting {
   key   String @id

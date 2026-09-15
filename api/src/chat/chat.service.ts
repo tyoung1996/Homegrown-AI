@@ -9,6 +9,7 @@ import * as path from 'path';
 import { PrismaService } from '../prisma.service';
 import { ToolsService, TOOL_DEFS } from './tools.service';
 import { ComfyService, IMAGES_DIR } from './comfy.service';
+import { CalendarService } from './calendar.service';
 import { savePhoto } from './photos';
 
 const OLLAMA = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
@@ -36,7 +37,8 @@ const BASE_PROMPT =
   'You are this family\'s private AI assistant, running on their own home server (the software is called Circuit Barn). ' +
   'If your memories include a name the family gave you, that IS your name — use it. ' +
   'You talk to a family including children, so always be warm, clear, and family-friendly. ' +
-  'You have tools: generate_image to create pictures when someone asks you to draw, paint, or make an image; ' +
+  'You have tools: add_event / list_events / delete_event for the shared family calendar — whenever someone mentions a plan with a date (a game, an appointment, a party, a trip), add it, and always confirm back the exact day and time; answer "what\'s coming up" questions from list_events; ' +
+  'generate_image to create pictures when someone asks you to draw, paint, or make an image; ' +
   'remember to permanently save lasting facts people tell you (names, birthdays, preferences — always save these); ' +
   'get_weather for any weather question; get_sports_scores for any game score; web_search for current events, prices, or anything you are not certain about; web_fetch to read a page. ' +
   'IMPORTANT: never tell the user to visit a website or check a source themselves — that is your job. ' +
@@ -51,6 +53,7 @@ export class ChatService {
     private prisma: PrismaService,
     private tools: ToolsService,
     private comfy: ComfyService,
+    private calendar: CalendarService,
   ) {}
 
   listConversations(userId: string) {
@@ -184,7 +187,39 @@ export class ChatService {
               ? JSON.parse(tc.function.arguments || '{}')
               : (tc.function.arguments ?? {});
           let result = '';
-          if (name === 'generate_image') {
+          if (name === 'add_event') {
+            emit({ type: 'status', text: 'Adding it to the family calendar' });
+            try {
+              const ev = await this.calendar.add(userId, {
+                title: String(args.title ?? ''),
+                when: args.when ? String(args.when) : undefined,
+                start: args.start ? String(args.start) : undefined,
+                end: args.end ? String(args.end) : undefined,
+                allDay: !!args.allDay,
+                location: args.location ? String(args.location) : undefined,
+                who: args.who ? String(args.who) : undefined,
+                notes: args.notes ? String(args.notes) : undefined,
+              });
+              const [d] = await this.calendar.describe([ev]);
+              result = `Added: ${d.title} — ${d.when}${d.location ? ' at ' + d.location : ''}${d.who ? ' (for ' + d.who + ')' : ''}. Confirm this to the user in one friendly line, including the day and time.`;
+            } catch (e: any) {
+              result = `Could not add it: ${e.message}. Ask the user for the missing detail.`;
+            }
+          } else if (name === 'list_events') {
+            emit({ type: 'status', text: 'Checking the family calendar' });
+            const events = await this.calendar.list(
+              args.from ? String(args.from) : undefined,
+              args.to ? String(args.to) : undefined,
+            );
+            const lines = await this.calendar.describe(events);
+            result = lines.length
+              ? JSON.stringify(lines)
+              : 'Nothing on the calendar in that range.';
+          } else if (name === 'delete_event') {
+            emit({ type: 'status', text: 'Updating the family calendar' });
+            await this.calendar.remove(String(args.id ?? ''));
+            result = 'Removed. Confirm to the user.';
+          } else if (name === 'generate_image') {
             const p = String(args.prompt ?? '');
             emit({ type: 'status', text: `Painting: ${p.slice(0, 80)}` });
             try {
@@ -483,7 +518,12 @@ export class ChatService {
         select: { summary: true, updatedAt: true },
       }),
     ]);
-    let prompt = BASE_PROMPT + `\nToday's date is ${new Date().toDateString()}.`;
+    const now = await this.calendar.now();
+    // a lookup table beats asking a small model to do weekday arithmetic
+    const upcoming = Array.from({ length: 14 }, (_, i) => now.plus({ days: i }).toFormat('EEE MMM d')).join(', ');
+    let prompt =
+      BASE_PROMPT +
+      `\nRight now it is ${now.toFormat('EEEE, MMMM d, yyyy h:mm a')} (${now.zoneName}). The next two weeks are: ${upcoming}. When you mention a date back to the user, always include the weekday.`;
     // admins can shape the personality from the app without touching code
     if (persona?.value?.trim()) {
       prompt += `\n\nHouse rules from the admin (follow these):\n${persona.value.trim()}`;

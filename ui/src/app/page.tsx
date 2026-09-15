@@ -7,6 +7,7 @@ import { BarnMark } from '@/components/logo';
 import { ModelsPanel, SetupScreen } from '@/components/models-panel';
 import { Studio } from '@/components/studio';
 import { MemoryPanel } from '@/components/memory-panel';
+import { Calendar } from '@/components/calendar';
 
 type User = { id: string; username: string; displayName: string; role: string };
 type Convo = { id: string; title: string; updatedAt: string };
@@ -74,6 +75,7 @@ export default function Home() {
   const [showAdmin, setShowAdmin] = useState(false);
   const [showModels, setShowModels] = useState(false);
   const [showStudio, setShowStudio] = useState(false);
+  const [showCalendar, setShowCalendar] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [server, setServer] = useState<{
     modelInstalled: boolean;
@@ -144,6 +146,7 @@ export default function Home() {
 
   async function openConvo(id: string) {
     setShowStudio(false);
+    setShowCalendar(false);
     setActiveId(id);
     setSidebarOpen(false);
     const raw = await api(`/conversations/${id}/messages`, {}, token);
@@ -173,6 +176,7 @@ export default function Home() {
 
   function newChat() {
     setShowStudio(false);
+    setShowCalendar(false);
     setActiveId(null);
     setMessages([]);
     setSidebarOpen(false);
@@ -291,12 +295,24 @@ export default function Home() {
         <button
           onClick={() => {
             setShowStudio(true);
+            setShowCalendar(false);
             setSidebarOpen(false);
           }}
           className={`btn-ghost ${showStudio ? 'bg-card border-ink' : ''}`}
         >
           <PaletteIcon />
           Studio
+        </button>
+        <button
+          onClick={() => {
+            setShowCalendar(true);
+            setShowStudio(false);
+            setSidebarOpen(false);
+          }}
+          className={`btn-ghost ${showCalendar ? 'bg-card border-ink' : ''}`}
+        >
+          <CalendarIcon />
+          Calendar
         </button>
       </div>
 
@@ -378,6 +394,8 @@ export default function Home() {
 
         {showStudio ? (
           <Studio token={token} meId={user.id} isAdmin={user.role === 'ADMIN'} />
+        ) : showCalendar ? (
+          <Calendar token={token} />
         ) : (
           <>
             <div className="flex-1 overflow-y-auto">
@@ -507,6 +525,15 @@ function PaletteIcon() {
       <circle cx="7.5" cy="11.5" r="1.2" fill="currentColor" />
       <circle cx="10.5" cy="7.5" r="1.2" fill="currentColor" />
       <circle cx="15.5" cy="7.5" r="1.2" fill="currentColor" />
+    </svg>
+  );
+}
+
+function CalendarIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <rect x="3" y="5" width="18" height="16" rx="2" />
+      <path d="M3 10h18M8 3v4M16 3v4" />
     </svg>
   );
 }

@@ -13,6 +13,7 @@ Chat, web search, live weather and scores, long-term memory, and image generatio
 - **An assistant with hands.** Weather, live sports scores, web search that reads the page, and a memory it uses on its own — tell it a birthday once and it knows it in every future chat. Admins can shape its personality from the app.
 - **It can see.** Attach a photo and ask about it, restyle it, or put the person into a new scene.
 - **The Studio.** Save a few photos of each family member, then put them anywhere: on a dragon, at Hogwarts, in a Ghibli forest. Two quality tiers — a one-minute draft and an Enhance pass with a face detailer that keeps people looking like themselves.
+- **A family calendar the assistant keeps.** "Levi has soccer Saturday at 10" puts it on the shared calendar, dates resolved properly ("next Tuesday" means next Tuesday). Ask "what's this weekend?" and it answers from the calendar. Subscribe once from your phone's calendar app and everything the assistant adds shows up there, with a reminder an hour before.
 - **Private by construction.** The models only listen on localhost. The API is the only thing allowed to talk to them. Add Tailscale and it works from anywhere without opening a single port.
 
 ## What you need

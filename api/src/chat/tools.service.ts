@@ -199,6 +199,55 @@ export const TOOL_DEFS = [
   {
     type: 'function',
     function: {
+      name: 'add_event',
+      description:
+        'Add something to the shared family calendar: practices, appointments, parties, birthdays, school events, trips. Use it whenever someone mentions a plan with a date. Pass the date and time EXACTLY as the person said it in "when" — the server works out the real date.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Short title, e.g. "Soccer game" or "Dentist"' },
+          when: {
+            type: 'string',
+            description: 'The date/time in the person\'s own words, e.g. "Saturday at 10am", "next Tuesday 3:30pm", "tomorrow", "June 7 at 2pm", "Oct 3" (all day)',
+          },
+          location: { type: 'string' },
+          who: { type: 'string', description: 'Who it is for, e.g. "Levi" or "everyone"' },
+          notes: { type: 'string' },
+        },
+        required: ['title', 'when'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_events',
+      description:
+        'Look at the family calendar. Use for questions like "what\'s this weekend", "when is the dentist", "what does Levi have this week". Dates are local YYYY-MM-DD; defaults to the next 30 days.',
+      parameters: {
+        type: 'object',
+        properties: {
+          from: { type: 'string', description: 'YYYY-MM-DD' },
+          to: { type: 'string', description: 'YYYY-MM-DD' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_event',
+      description: 'Remove an event from the family calendar. Get the id from list_events first and confirm with the user which one.',
+      parameters: {
+        type: 'object',
+        properties: { id: { type: 'string' } },
+        required: ['id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'remember',
       description:
         'Save a lasting fact to your permanent memory so you know it in every future chat. Use it whenever someone tells you something worth keeping: their preferences, birthdays, nicknames, family facts, or a name they give you. Do NOT use it for throwaway conversation details.',
