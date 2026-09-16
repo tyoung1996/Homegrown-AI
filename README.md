@@ -6,6 +6,12 @@ Chat, web search, live weather and scores, long-term memory, and image generatio
 
 > This is version one. There are bugs. It's free, it's yours, and it's still being built.
 
+### Watch the build
+
+[![I Built My Own ChatGPT on a Dusty Old Gaming PC](https://img.youtube.com/vi/NeipbqHXrW0/maxresdefault.jpg)](https://youtu.be/NeipbqHXrW0)
+
+The whole story, from a dusty PC that wouldn't boot to the family using it: [watch on YouTube](https://youtu.be/NeipbqHXrW0).
+
 ## What it does
 
 - **A real app, not a terminal.** Everyone gets a login. Kids get child accounts. Chats and images are private per person.
