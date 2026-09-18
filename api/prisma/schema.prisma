@@ -13,6 +13,25 @@ enum Role {
   CHILD
 }
 
+// what someone asked for: a film, a whole show, one season, one episode
+enum MediaKind {
+  MOVIE
+  SERIES
+  SEASON
+  EPISODE
+}
+
+// where a request is up to. the family-facing wording lives in the ui
+enum MediaStatus {
+  REQUESTED   // on the list, nothing has happened yet
+  SEARCHING   // a source is looking for it
+  ACQUIRING   // a source is bringing it in (a rip, a recording, a copy)
+  IMPORTING   // the file landed and is being filed into the library
+  AVAILABLE   // it is in the library and ready to watch
+  UNAVAILABLE // no source could provide it
+  CANCELLED
+}
+
 model User {
   id            String           @id @default(cuid())
   username      String           @unique
@@ -23,6 +42,7 @@ model User {
   conversations Conversation[]
   images        ImageGeneration[]
   memories      Memory[]
+  mediaRequests MediaRequest[]
 }
 
 // saved people for the Studio — a named reference photo the image models
@@ -94,6 +114,9 @@ model Message {
   role           String
   content        String
   imagePath      String?
+  // anything the message carries besides text: a picker the family taps to
+  // choose films or episodes, or the list of things a reply put on the list
+  data           Json?
   createdAt      DateTime     @default(now())
 }
 
@@ -112,4 +135,32 @@ model InstalledModel {
   name      String   @unique
   sizeBytes BigInt?
   addedAt   DateTime @default(now())
+}
+
+// something a family member asked to have in the library, and how far along
+// it is. the catalog id is TMDB's, which is also what jellyfin stores, so a
+// request can be matched against what is already on the shelf
+model MediaRequest {
+  id            String      @id @default(cuid())
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind          MediaKind
+  catalogId     Int         // tmdb id of the film or the series
+  title         String      // "The Office"
+  label         String      // what the family sees: "The Office - S3E7"
+  year          Int?
+  posterUrl     String?
+  overview      String?
+  seasonNumber  Int?
+  episodeNumber Int?
+  status        MediaStatus @default(REQUESTED)
+  statusNote    String?     // one plain line about what is happening
+  source        String?     // which acquisition source picked it up
+  filePath      String?     // where it ended up in the library
+  jellyfinId    String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@index([status])
+  @@index([catalogId])
 }

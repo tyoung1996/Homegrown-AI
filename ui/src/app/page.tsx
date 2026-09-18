@@ -8,6 +8,13 @@ import { ModelsPanel, SetupScreen } from '@/components/models-panel';
 import { Studio } from '@/components/studio';
 import { MemoryPanel } from '@/components/memory-panel';
 import { Calendar } from '@/components/calendar';
+import { Library } from '@/components/library';
+import {
+  MediaPicker,
+  Picker,
+  RequestList,
+  RequestRow,
+} from '@/components/media-picker';
 
 type User = { id: string; username: string; displayName: string; role: string };
 type Convo = { id: string; title: string; updatedAt: string };
@@ -18,6 +25,9 @@ type Msg = {
   image?: string;
   sources?: string[];
   status?: string;
+  // films or episodes to tick, and what a reply added to the library list
+  picker?: Picker;
+  requests?: RequestRow[];
 };
 type AdminUser = User & { createdAt: string };
 
@@ -76,6 +86,7 @@ export default function Home() {
   const [showModels, setShowModels] = useState(false);
   const [showStudio, setShowStudio] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
+  const [showLibrary, setShowLibrary] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [server, setServer] = useState<{
     modelInstalled: boolean;
@@ -147,6 +158,7 @@ export default function Home() {
   async function openConvo(id: string) {
     setShowStudio(false);
     setShowCalendar(false);
+    setShowLibrary(false);
     setActiveId(id);
     setSidebarOpen(false);
     const raw = await api(`/conversations/${id}/messages`, {}, token);
@@ -154,6 +166,9 @@ export default function Home() {
       raw.map((m: any) => ({
         ...m,
         image: m.imagePath ? `${apiBase()}/images/${m.imagePath}` : undefined,
+        // pickers and library lists are stored with the message
+        picker: m.data?.picker,
+        requests: m.data?.requests,
       })),
     );
   }
@@ -177,6 +192,7 @@ export default function Home() {
   function newChat() {
     setShowStudio(false);
     setShowCalendar(false);
+    setShowLibrary(false);
     setActiveId(null);
     setMessages([]);
     setSidebarOpen(false);
@@ -249,6 +265,14 @@ export default function Home() {
             }));
           else if (ev.type === 'sources')
             patchLast((m) => ({ ...m, sources: ev.urls }));
+          else if (ev.type === 'picker')
+            patchLast((m) => ({ ...m, status: undefined, picker: ev.picker }));
+          else if (ev.type === 'requests')
+            patchLast((m) => ({
+              ...m,
+              status: undefined,
+              requests: ev.requests,
+            }));
           else if (ev.type === 'error') throw new Error(ev.message);
         }
       }
@@ -296,6 +320,7 @@ export default function Home() {
           onClick={() => {
             setShowStudio(true);
             setShowCalendar(false);
+            setShowLibrary(false);
             setSidebarOpen(false);
           }}
           className={`btn-ghost ${showStudio ? 'bg-card border-ink' : ''}`}
@@ -307,12 +332,25 @@ export default function Home() {
           onClick={() => {
             setShowCalendar(true);
             setShowStudio(false);
+            setShowLibrary(false);
             setSidebarOpen(false);
           }}
           className={`btn-ghost ${showCalendar ? 'bg-card border-ink' : ''}`}
         >
           <CalendarIcon />
           Calendar
+        </button>
+        <button
+          onClick={() => {
+            setShowLibrary(true);
+            setShowStudio(false);
+            setShowCalendar(false);
+            setSidebarOpen(false);
+          }}
+          className={`btn-ghost ${showLibrary ? 'bg-card border-ink' : ''}`}
+        >
+          <FilmIcon />
+          Movie night
         </button>
       </div>
 
@@ -322,7 +360,9 @@ export default function Home() {
           <div
             key={c.id}
             className={`group flex items-center rounded-md text-sm ${
-              c.id === activeId && !showStudio ? 'bg-card text-ink' : 'text-ink-2 hover:bg-card/60'
+              c.id === activeId && !showStudio && !showCalendar && !showLibrary
+                ? 'bg-card text-ink'
+                : 'text-ink-2 hover:bg-card/60'
             }`}
           >
             <button
@@ -396,6 +436,8 @@ export default function Home() {
           <Studio token={token} meId={user.id} isAdmin={user.role === 'ADMIN'} />
         ) : showCalendar ? (
           <Calendar token={token} />
+        ) : showLibrary ? (
+          <Library token={token} isAdmin={user.role === 'ADMIN'} />
         ) : (
           <>
             <div className="flex-1 overflow-y-auto">
@@ -416,6 +458,7 @@ export default function Home() {
                   <MessageBubble
                     key={m.id ?? i}
                     msg={m}
+                    token={token}
                     streaming={busy && i === messages.length - 1}
                   />
                 ))}
@@ -538,6 +581,15 @@ function CalendarIcon() {
   );
 }
 
+function FilmIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M7 4v16M17 4v16M3 12h18M3 8h4M3 16h4M17 8h4M17 16h4" />
+    </svg>
+  );
+}
+
 function SendIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -546,7 +598,15 @@ function SendIcon() {
   );
 }
 
-function MessageBubble({ msg, streaming }: { msg: Msg; streaming?: boolean }) {
+function MessageBubble({
+  msg,
+  token,
+  streaming,
+}: {
+  msg: Msg;
+  token: string;
+  streaming?: boolean;
+}) {
   if (msg.role === 'user') {
     return (
       <div className="msg-in ml-auto w-fit max-w-[85%]">
@@ -597,6 +657,8 @@ function MessageBubble({ msg, streaming }: { msg: Msg; streaming?: boolean }) {
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
           </div>
         )}
+        {msg.picker && <MediaPicker picker={msg.picker} token={token} />}
+        {msg.requests && <RequestList requests={msg.requests} />}
         {msg.sources && msg.sources.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
             {msg.sources.map((u) => {

@@ -42,8 +42,7 @@ export class ToolsService {
     );
     const html = await res.text();
     const results: SearchResult[] = [];
-    const linkRe =
-      /class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+    const linkRe = /class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
     const snippetRe = /class="result__snippet"[^>]*>([\s\S]*?)<\/(?:a|div)>/g;
     const links: { url: string; title: string }[] = [];
     let m: RegExpExecArray | null;
@@ -58,9 +57,7 @@ export class ToolsService {
     while ((m = snippetRe.exec(html)) && snippets.length < 6) {
       snippets.push(stripTags(m[1]));
     }
-    links.forEach((l, i) =>
-      results.push({ ...l, snippet: snippets[i] ?? '' }),
-    );
+    links.forEach((l, i) => results.push({ ...l, snippet: snippets[i] ?? '' }));
     this.log.log(`web_search "${query}" -> ${results.length} results`);
     return results.slice(0, 5);
   }
@@ -87,7 +84,8 @@ export class ToolsService {
       mls: 'soccer/usa.1',
     };
     const path = paths[league.toLowerCase()];
-    if (!path) return `Unknown league "${league}". I know: ${Object.keys(paths).join(', ')}`;
+    if (!path)
+      return `Unknown league "${league}". I know: ${Object.keys(paths).join(', ')}`;
     try {
       const res = await fetch(
         `https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard`,
@@ -117,7 +115,9 @@ export class ToolsService {
         if (filtered.length) games = filtered;
       }
       if (!games.length) return 'No games on the scoreboard right now.';
-      this.log.log(`get_scores ${league} ${team ?? ''} -> ${games.length} games`);
+      this.log.log(
+        `get_scores ${league} ${team ?? ''} -> ${games.length} games`,
+      );
       return JSON.stringify(games.slice(0, 8));
     } catch (e: any) {
       return `Score lookup failed: ${e.message}`;
@@ -169,7 +169,10 @@ export class ToolsService {
     } catch {
       return 'Invalid URL.';
     }
-    if (!/^https?:$/.test(parsed.protocol) || BLOCKED_HOSTS.test(parsed.hostname)) {
+    if (
+      !/^https?:$/.test(parsed.protocol) ||
+      BLOCKED_HOSTS.test(parsed.hostname)
+    ) {
       return 'This URL is not allowed.';
     }
     try {
@@ -182,7 +185,11 @@ export class ToolsService {
         signal: AbortSignal.timeout(15000),
       });
       const type = res.headers.get('content-type') ?? '';
-      if (!type.includes('html') && !type.includes('text') && !type.includes('json')) {
+      if (
+        !type.includes('html') &&
+        !type.includes('text') &&
+        !type.includes('json')
+      ) {
         return `Not a readable page (content-type ${type}).`;
       }
       const body = await res.text();
@@ -205,13 +212,20 @@ export const TOOL_DEFS = [
       parameters: {
         type: 'object',
         properties: {
-          title: { type: 'string', description: 'Short title, e.g. "Soccer game" or "Dentist"' },
+          title: {
+            type: 'string',
+            description: 'Short title, e.g. "Soccer game" or "Dentist"',
+          },
           when: {
             type: 'string',
-            description: 'The date/time in the person\'s own words, e.g. "Saturday at 10am", "next Tuesday 3:30pm", "tomorrow", "June 7 at 2pm", "Oct 3" (all day)',
+            description:
+              'The date/time in the person\'s own words, e.g. "Saturday at 10am", "next Tuesday 3:30pm", "tomorrow", "June 7 at 2pm", "Oct 3" (all day)',
           },
           location: { type: 'string' },
-          who: { type: 'string', description: 'Who it is for, e.g. "Levi" or "everyone"' },
+          who: {
+            type: 'string',
+            description: 'Who it is for, e.g. "Levi" or "everyone"',
+          },
           notes: { type: 'string' },
         },
         required: ['title', 'when'],
@@ -237,11 +251,165 @@ export const TOOL_DEFS = [
     type: 'function',
     function: {
       name: 'delete_event',
-      description: 'Remove an event from the family calendar. Get the id from list_events first and confirm with the user which one.',
+      description:
+        'Remove an event from the family calendar. Get the id from list_events first and confirm with the user which one.',
       parameters: {
         type: 'object',
         properties: { id: { type: 'string' } },
         required: ['id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_movies',
+      description:
+        'Look up films by name when someone wants one added to the family library ("add Harry Potter", "can we get Interstellar"). Shows the family a list to pick from, so call this FIRST and let them choose — do not guess which one they meant.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'The title they said, e.g. "harry potter"',
+          },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'request_movies',
+      description:
+        'Add specific films to the library list. Only use ids that came back from search_movies in this conversation — for example when they follow up with "just the first three" or "all of them".',
+      parameters: {
+        type: 'object',
+        properties: {
+          movieIds: {
+            type: 'array',
+            items: { type: 'number' },
+            description: 'catalogId values from search_movies',
+          },
+        },
+        required: ['movieIds'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_series',
+      description:
+        'Look up TV shows by name when someone wants one added ("add The Office", "get Fallout"). Shows the family the matches to choose from.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The show name they said' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_series_seasons',
+      description:
+        'List the seasons of a show, with how many of its episodes are already in the library. Use after search_series when they mention seasons.',
+      parameters: {
+        type: 'object',
+        properties: {
+          seriesId: {
+            type: 'number',
+            description: 'catalogId from search_series',
+          },
+        },
+        required: ['seriesId'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_season_episodes',
+      description:
+        'List the episodes in one season of a show, with what is already in the library.',
+      parameters: {
+        type: 'object',
+        properties: {
+          seriesId: { type: 'number' },
+          seasonNumber: { type: 'number' },
+        },
+        required: ['seriesId', 'seasonNumber'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'request_series',
+      description:
+        'Add a show to the library list. Leave seasons empty for the whole show, or pass the season numbers they asked for ("seasons two and three").',
+      parameters: {
+        type: 'object',
+        properties: {
+          seriesId: {
+            type: 'number',
+            description: 'catalogId from search_series',
+          },
+          seasons: {
+            type: 'array',
+            items: { type: 'number' },
+            description:
+              'Season numbers; omit or leave empty for the whole show',
+          },
+        },
+        required: ['seriesId'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'request_episodes',
+      description:
+        'Add individual episodes of a show to the library list, e.g. "season 3 episode 7".',
+      parameters: {
+        type: 'object',
+        properties: {
+          seriesId: { type: 'number' },
+          episodes: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                season: { type: 'number' },
+                episode: { type: 'number' },
+              },
+              required: ['season', 'episode'],
+            },
+          },
+        },
+        required: ['seriesId', 'episodes'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_media_request_status',
+      description:
+        'Check what is on the family library list and how far along each thing is ("is Harry Potter ready yet", "what did we ask for").',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Optional title to filter by; omit for everything',
+          },
+        },
       },
     },
   },

@@ -12,7 +12,9 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { CalendarService, EventInput } from './calendar.service';
+import { CalendarService } from './calendar.service';
+// type-only: a decorated signature cannot use a value import under isolatedModules
+import type { EventInput } from './calendar.service';
 
 @UseGuards(JwtAuthGuard)
 @Controller('calendar')

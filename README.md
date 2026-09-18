@@ -19,6 +19,7 @@ The whole story, from a dusty PC that wouldn't boot to the family using it: [wat
 - **An assistant with hands.** Weather, live sports scores, web search that reads the page, and a memory it uses on its own — tell it a birthday once and it knows it in every future chat. Admins can shape its personality from the app.
 - **It can see.** Attach a photo and ask about it, restyle it, or put the person into a new scene.
 - **The Studio.** Save a few photos of each family member, then put them anywhere: on a dragon, at Hogwarts, in a Ghibli forest. Two quality tiers — a one-minute draft and an Enhance pass with a face detailer that keeps people looking like themselves.
+- **Movie night.** Ask for a film or a show — "add Harry Potter" — and it shows the matches as tick boxes: pick the ones you want, whole seasons, or single episodes. Everything goes on a shared list you can watch progress on, it tells you what you already own, and anything you add to the server's drop folder is renamed, filed and handed to Jellyfin automatically.
 - **A family calendar the assistant keeps.** "Levi has soccer Saturday at 10" puts it on the shared calendar, dates resolved properly ("next Tuesday" means next Tuesday). Ask "what's this weekend?" and it answers from the calendar. Subscribe once from your phone's calendar app and everything the assistant adds shows up there, with a reminder an hour before.
 - **Private by construction.** The models only listen on localhost. The API is the only thing allowed to talk to them. Add Tailscale and it works from anywhere without opening a single port.
 
@@ -47,6 +48,27 @@ That installs Node, PostgreSQL, and Ollama, creates the database, builds both ap
 ```
 
 Installs ComfyUI with the image model, identity tools (InstantID + ReActor), and the face detailer, then registers it as a service. Afterwards, install the **Vision** extension from the Models panel so the assistant can see photos. Both are optional — the app works without them and simply hides what isn't there.
+
+### Movie night (optional)
+
+The library side needs three things in `api/.env`, all optional — the app hides
+what isn't configured:
+
+| Setting | What it is |
+| --- | --- |
+| `TMDB_API_KEY` | Free key from [themoviedb.org](https://www.themoviedb.org/settings/api) so titles can be looked up |
+| `JELLYFIN_URL` / `JELLYFIN_API_KEY` | Your [Jellyfin](https://jellyfin.org) server and a key from its Dashboard → API Keys, so the app knows what you already own |
+| `MEDIA_ROOT` / `MEDIA_DROPBOX` | The library folder Jellyfin reads, and the folder new files are picked up from |
+
+**How a request becomes a file.** The app keeps the list, the search, the
+pickers and the import. Where a file actually comes from is deliberately one
+small piece — `api/src/media/acquisition.ts` — and the built-in one is a
+watched folder: put a file you're entitled to copy into `MEDIA_DROPBOX` (a
+disc you ripped, a recording, anything you're licensed for) and the app
+renames it, files it under `MEDIA_ROOT/Movies` or `MEDIA_ROOT/Shows` the way
+Jellyfin expects, marks the request ready to watch, and tells Jellyfin to
+rescan. Another source — a TV tuner recording off an antenna, a disc ripper —
+implements the same small interface and registers itself; nothing else changes.
 
 ### Use it away from home
 
@@ -87,9 +109,10 @@ phones & laptops ──▶ Next.js UI (:3000) ──▶ NestJS API (:3001) ─�
 
 - `ui/` — Next.js app. One page, no framework theatre.
 - `api/` — NestJS. Auth (JWT, bcrypt, roles), the chat tool loop, the vision router, the Studio pipeline, the model installer.
-- `api/prisma/schema.prisma` — the whole product in one file: User, Conversation, Message, Memory, Person, Setting.
+- `api/prisma/schema.prisma` — the whole product in one file: User, Conversation, Message, Memory, Person, Setting, MediaRequest.
 - `api/src/chat/tools.service.ts` — the assistant's hands.
 - `api/src/chat/comfy.service.ts` — how a picture actually gets made (scene first, then the face).
+- `api/src/media/` — the library list: title lookup, what Jellyfin already has, the drop-folder importer, and the one file that decides where a file comes from.
 
 Everything runs on one machine as four systemd services: `circuitbarn-ui`, `circuitbarn-api`, `ollama`, `comfyui`.
 

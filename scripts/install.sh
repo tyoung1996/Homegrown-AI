@@ -60,6 +60,8 @@ else
     || sudo -u postgres psql -qc "ALTER ROLE circuitbarn LOGIN PASSWORD '$DB_PASS';"
   sudo -u postgres psql -qc "CREATE DATABASE circuitbarn OWNER circuitbarn;" 2>/dev/null || true
   mkdir -p "$ROOT/data/images"
+  MEDIA_ROOT="${MEDIA_ROOT:-$HOME/media}"
+  mkdir -p "$MEDIA_ROOT/Movies" "$MEDIA_ROOT/Shows" "$MEDIA_ROOT/_incoming"
   cat > "$ENV_FILE" <<EOF
 DATABASE_URL="postgresql://circuitbarn:$DB_PASS@localhost:5432/circuitbarn"
 JWT_SECRET=$(openssl rand -hex 32)
@@ -70,6 +72,11 @@ VISION_MODEL=qwen2.5vl:7b
 SD_CHECKPOINT=RealVisXL_Lightning.safetensors
 SD_CHECKPOINT_HQ=RealVisXL_V5.safetensors
 IMAGES_DIR=$ROOT/data/images
+TMDB_API_KEY=
+JELLYFIN_URL=http://127.0.0.1:8096
+JELLYFIN_API_KEY=
+MEDIA_ROOT=$MEDIA_ROOT
+MEDIA_DROPBOX=$MEDIA_ROOT/_incoming
 EOF
   chmod 600 "$ENV_FILE"
   ok "database created, api/.env written"

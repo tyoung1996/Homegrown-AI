@@ -6,16 +6,29 @@ import {
 } from '@nestjs/common';
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { ToolsService, TOOL_DEFS } from './tools.service';
 import { ComfyService, IMAGES_DIR } from './comfy.service';
 import { CalendarService } from './calendar.service';
+import { MediaService, MediaRequestView } from '../media/media.service';
 import { savePhoto } from './photos';
 
 const OLLAMA = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
 const MODEL = process.env.CHAT_MODEL ?? 'qwen3:8b';
 const VISION_MODEL = process.env.VISION_MODEL ?? 'qwen2.5vl:7b';
 const MAX_TOOL_ROUNDS = 3;
+// the library tools, hidden when no catalogue key is configured
+const MEDIA_TOOL_NAMES = [
+  'search_movies',
+  'request_movies',
+  'search_series',
+  'get_series_seasons',
+  'get_season_episodes',
+  'request_series',
+  'request_episodes',
+  'get_media_request_status',
+];
 
 export type StreamEvent =
   | { type: 'meta'; conversationId: string }
@@ -23,8 +36,63 @@ export type StreamEvent =
   | { type: 'token'; text: string }
   | { type: 'image'; url: string }
   | { type: 'sources'; urls: string[] }
+  // a thing the family taps: pick films, seasons or episodes to add
+  | { type: 'picker'; picker: MediaPicker }
+  // what a reply just put on the library list
+  | { type: 'requests'; requests: MediaRequestView[] }
   | { type: 'done' }
   | { type: 'error'; message: string };
+
+// the shapes the chat can hand to the ui to be tapped on
+export type MediaPicker =
+  | {
+      mode: 'movies';
+      query: string;
+      items: {
+        catalogId: number;
+        title: string;
+        year?: number;
+        overview?: string;
+        posterUrl?: string;
+        inLibrary: boolean;
+        requested: boolean;
+      }[];
+    }
+  | {
+      mode: 'series';
+      query: string;
+      items: {
+        catalogId: number;
+        title: string;
+        year?: number;
+        overview?: string;
+        posterUrl?: string;
+        inLibrary: boolean;
+        requested: boolean;
+      }[];
+    };
+
+// what an assistant message can carry besides its text
+export type MessageAttachment =
+  { picker: MediaPicker } | { requests: MediaRequestView[] };
+
+// tool arguments come back as loose json from the model — read them
+// defensively rather than trusting the shape
+function numberList(value: unknown): number[] {
+  return Array.isArray(value)
+    ? value.map((v) => Number(v)).filter((n) => Number.isFinite(n))
+    : [];
+}
+
+function episodeList(value: unknown): { season: number; episode: number }[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((raw) => {
+      const e = (raw ?? {}) as { season?: unknown; episode?: unknown };
+      return { season: Number(e.season), episode: Number(e.episode) };
+    })
+    .filter((e) => Number.isFinite(e.season) && Number.isFinite(e.episode));
+}
 
 interface OllamaMsg {
   role: string;
@@ -40,6 +108,7 @@ const BASE_PROMPT =
   'You have tools: add_event / list_events / delete_event for the shared family calendar — whenever someone mentions a plan with a date (a game, an appointment, a party, a trip), add it, and always confirm back the exact day and time; answer "what\'s coming up" questions from list_events; ' +
   'generate_image to create pictures when someone asks you to draw, paint, or make an image; ' +
   'remember to permanently save lasting facts people tell you (names, birthdays, preferences — always save these); ' +
+  'search_movies / search_series whenever someone wants a film or show added to the family library — never guess which title they meant, show them the matches and let them pick; request_movies / request_series / request_episodes once they have chosen or when they say which ones ("the first three", "seasons two and three"); get_media_request_status to say how far along something is; ' +
   'get_weather for any weather question; get_sports_scores for any game score; web_search for current events, prices, or anything you are not certain about; web_fetch to read a page. ' +
   'IMPORTANT: never tell the user to visit a website or check a source themselves — that is your job. ' +
   'If search snippets do not contain the actual answer, call web_fetch on the most promising result and extract it. ' +
@@ -54,6 +123,7 @@ export class ChatService {
     private tools: ToolsService,
     private comfy: ComfyService,
     private calendar: CalendarService,
+    private media: MediaService,
   ) {}
 
   listConversations(userId: string) {
@@ -77,6 +147,7 @@ export class ChatService {
         role: true,
         content: true,
         imagePath: true,
+        data: true,
         createdAt: true,
       },
     });
@@ -161,9 +232,16 @@ export class ChatService {
     const sources = new Set<string>();
     let finalText = '';
     let generatedImage: string | null = null;
-    const tools = (await this.comfyReady())
+    // anything the reply carries besides text (a picker, a list of things
+    // just added) — shown as it happens and kept with the message
+    let attachment: MessageAttachment | null = null;
+    let tools = (await this.comfyReady())
       ? TOOL_DEFS
       : TOOL_DEFS.filter((t) => t.function.name !== 'generate_image');
+    // no catalogue key on this server means no library requests to offer
+    if (!(await this.media.health()).catalog.configured) {
+      tools = tools.filter((t) => !MEDIA_TOOL_NAMES.includes(t.function.name));
+    }
 
     try {
       for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
@@ -236,6 +314,135 @@ export class ChatService {
               this.log.error(`image gen failed: ${e.message}`);
               result = 'Image generation failed. Apologize briefly.';
             }
+          } else if (name === 'search_movies' || name === 'search_series') {
+            const isSeries = name === 'search_series';
+            const query = String(args.query ?? '').trim();
+            emit({
+              type: 'status',
+              text: `Looking up ${query || (isSeries ? 'that show' : 'that film')}`,
+            });
+            try {
+              const items = isSeries
+                ? await this.media.searchSeries(query)
+                : await this.media.searchMovies(query);
+              if (!items.length) {
+                result = `Nothing found for "${query}". Ask them to try another title.`;
+              } else {
+                const picker = {
+                  mode: isSeries ? ('series' as const) : ('movies' as const),
+                  query,
+                  items,
+                };
+                attachment = { picker };
+                emit({ type: 'picker', picker });
+                result =
+                  JSON.stringify(
+                    items.map((i) => ({
+                      catalogId: i.catalogId,
+                      title: i.title,
+                      year: i.year,
+                      inLibrary: i.inLibrary,
+                      requested: i.requested,
+                    })),
+                  ) +
+                  ' — these are already shown to the user as tick boxes they can tap. Say in one short line what you found and that they can pick, or ask which ones they want. Do not list them all out again.';
+              }
+            } catch (e: any) {
+              result = `Lookup failed: ${e.message}`;
+            }
+          } else if (name === 'get_series_seasons') {
+            emit({ type: 'status', text: 'Checking the seasons' });
+            try {
+              const data = await this.media.seasons(Number(args.seriesId));
+              result = JSON.stringify({
+                series: data.series.title,
+                seasons: data.seasons.map((x) => ({
+                  season: x.seasonNumber,
+                  episodes: x.episodeCount,
+                  inLibrary: x.inLibrary,
+                })),
+              });
+            } catch (e: any) {
+              result = `Could not read the seasons: ${e.message}`;
+            }
+          } else if (name === 'get_season_episodes') {
+            emit({ type: 'status', text: 'Checking the episodes' });
+            try {
+              const data = await this.media.episodes(
+                Number(args.seriesId),
+                Number(args.seasonNumber),
+              );
+              result = JSON.stringify({
+                series: data.series.title,
+                episodes: data.episodes.map((x) => ({
+                  season: x.seasonNumber,
+                  episode: x.episodeNumber,
+                  name: x.name,
+                  inLibrary: x.inLibrary,
+                })),
+              });
+            } catch (e: any) {
+              result = `Could not read the episodes: ${e.message}`;
+            }
+          } else if (
+            name === 'request_movies' ||
+            name === 'request_series' ||
+            name === 'request_episodes'
+          ) {
+            emit({ type: 'status', text: 'Adding to the library list' });
+            try {
+              const outcomes =
+                name === 'request_movies'
+                  ? await this.media.requestMovies(
+                      userId,
+                      numberList(args.movieIds),
+                    )
+                  : name === 'request_series'
+                    ? await this.media.requestSeries(
+                        userId,
+                        Number(args.seriesId),
+                        numberList(args.seasons),
+                      )
+                    : await this.media.requestEpisodes(
+                        userId,
+                        Number(args.seriesId),
+                        episodeList(args.episodes),
+                      );
+              const queued = outcomes
+                .filter((o) => o.result !== 'already-available')
+                .map((o) => (o as { request: MediaRequestView }).request)
+                .filter(Boolean);
+              if (queued.length) {
+                attachment = { requests: queued };
+                emit({ type: 'requests', requests: queued });
+              }
+              result =
+                JSON.stringify(
+                  outcomes.map((o) => ({ item: o.label, outcome: o.result })),
+                ) +
+                ' — "already-available" means it is on the shelf already, "already-requested" means it was on the list. Confirm warmly in one or two lines.';
+            } catch (e: any) {
+              result = `Could not add that: ${e.message}`;
+            }
+          } else if (name === 'get_media_request_status') {
+            emit({ type: 'status', text: 'Checking the library list' });
+            const all = await this.media.list(userId);
+            const q = String(args.query ?? '')
+              .toLowerCase()
+              .trim();
+            const rows = (
+              q ? all.filter((r) => r.label.toLowerCase().includes(q)) : all
+            ).slice(0, 25);
+            result = rows.length
+              ? JSON.stringify(
+                  rows.map((r) => ({
+                    item: r.label,
+                    status: r.statusText,
+                    note: r.statusNote,
+                    askedBy: r.requestedBy,
+                  })),
+                )
+              : 'Nothing on the library list yet.';
           } else if (name === 'remember') {
             emit({ type: 'status', text: 'Saving that to memory' });
             await this.prisma.memory.create({
@@ -287,6 +494,10 @@ export class ChatService {
         role: 'assistant',
         content: finalText,
         imagePath: generatedImage,
+        // prisma's json input type has no room for named interfaces
+        ...(attachment
+          ? { data: attachment as unknown as Prisma.InputJsonValue }
+          : {}),
       },
     });
     await this.prisma.conversation.update({
