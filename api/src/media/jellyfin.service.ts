@@ -8,6 +8,11 @@ const URL_BASE = (process.env.JELLYFIN_URL ?? 'http://127.0.0.1:8096').replace(
   '',
 );
 const KEY = process.env.JELLYFIN_API_KEY ?? '';
+// newer jellyfin builds only accept the key in this header; the old
+// X-Emby-Token one is refused outright
+const AUTH =
+  `MediaBrowser Token="${KEY}", Client="Circuit Barn", ` +
+  'Device="server", DeviceId="circuit-barn", Version="1.0"';
 
 // the slice of jellyfin's item shape this app uses
 interface JellyfinItem {
@@ -55,7 +60,7 @@ export class JellyfinService {
       const res = await fetch(URL_BASE + path, {
         ...init,
         headers: {
-          'X-Emby-Token': KEY,
+          Authorization: AUTH,
           'content-type': 'application/json',
           ...(init.headers ?? {}),
         },

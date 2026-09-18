@@ -37,7 +37,8 @@ export class LibraryImportService implements OnModuleInit, OnModuleDestroy {
   private log = new Logger('Import');
   private timer: NodeJS.Timeout | null = null;
   private seen = new Map<string, { size: number; at: number }>();
-  private running = false;
+  private inflight: Promise<{ imported: string[]; waiting: string[] }> | null =
+    null;
 
   constructor(
     private media: MediaService,
@@ -58,36 +59,45 @@ export class LibraryImportService implements OnModuleInit, OnModuleDestroy {
     if (this.timer) clearInterval(this.timer);
   }
 
-  /** One pass over the drop folder. Safe to call by hand (the admin button). */
+  /** One pass over the drop folder. Safe to call by hand (the admin button):
+   * if the timer is mid-sweep, wait for that one and report what it did
+   * rather than saying nothing happened. */
   async sweep(): Promise<{ imported: string[]; waiting: string[] }> {
-    if (this.running) return { imported: [], waiting: [] };
-    this.running = true;
+    if (this.inflight) return this.inflight;
+    this.inflight = this.runSweep();
+    try {
+      return await this.inflight;
+    } finally {
+      this.inflight = null;
+    }
+  }
+
+  private async runSweep(): Promise<{
+    imported: string[];
+    waiting: string[];
+  }> {
     const imported: string[] = [];
     const waiting: string[] = [];
-    try {
-      await fs.mkdir(DROPBOX_DIR, { recursive: true });
-      for (const file of await this.videoFiles(DROPBOX_DIR)) {
-        const stat = await fs.stat(file).catch(() => null);
-        if (!stat) continue;
-        // a file still being copied keeps growing; wait for it to hold still
-        const before = this.seen.get(file);
-        if (!before || before.size !== stat.size) {
-          this.seen.set(file, { size: stat.size, at: Date.now() });
-          waiting.push(path.basename(file));
-          continue;
-        }
-        if (Date.now() - before.at < IMPORT_SETTLE_MS) {
-          waiting.push(path.basename(file));
-          continue;
-        }
-        const placed = await this.importOne(file);
-        if (placed) imported.push(placed);
-        this.seen.delete(file);
+    await fs.mkdir(DROPBOX_DIR, { recursive: true });
+    for (const file of await this.videoFiles(DROPBOX_DIR)) {
+      const stat = await fs.stat(file).catch(() => null);
+      if (!stat) continue;
+      // a file still being copied keeps growing; wait for it to hold still
+      const before = this.seen.get(file);
+      if (!before || before.size !== stat.size) {
+        this.seen.set(file, { size: stat.size, at: Date.now() });
+        waiting.push(path.basename(file));
+        continue;
       }
-      if (imported.length) await this.jellyfin.refreshLibrary();
-    } finally {
-      this.running = false;
+      if (Date.now() - before.at < IMPORT_SETTLE_MS) {
+        waiting.push(path.basename(file));
+        continue;
+      }
+      const placed = await this.importOne(file);
+      if (placed) imported.push(placed);
+      this.seen.delete(file);
     }
+    if (imported.length) await this.jellyfin.refreshLibrary();
     return { imported, waiting };
   }
 
