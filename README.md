@@ -21,7 +21,7 @@ The whole story, from a dusty PC that wouldn't boot to the family using it: [wat
 - **The Studio.** Save a few photos of each family member, then put them anywhere: on a dragon, at Hogwarts, in a Ghibli forest. Two quality tiers — a one-minute draft and an Enhance pass with a face detailer that keeps people looking like themselves.
 - **Movie night.** Ask for a film or a show — "add Harry Potter" — and it shows the matches as tick boxes: pick the ones you want, whole seasons, or single episodes. Everything goes on a shared list you can watch progress on, it tells you what you already own, and anything you add to the server's drop folder is renamed, filed and handed to Jellyfin automatically.
 - **Put it on the TV.** "I want to watch Harry Potter" — it checks what you own, asks which one and which TV, and plays it. It finds the TVs on your network itself and wakes them from standby.
-- **A family calendar the assistant keeps.** "Levi has soccer Saturday at 10" puts it on the shared calendar, dates resolved properly ("next Tuesday" means next Tuesday). Ask "what's this weekend?" and it answers from the calendar. Subscribe once from your phone's calendar app and everything the assistant adds shows up there, with a reminder an hour before.
+- **A family calendar the assistant keeps.** "Sam has soccer Saturday at 10" puts it on the shared calendar, dates resolved properly ("next Tuesday" means next Tuesday). Ask "what's this weekend?" and it answers from the calendar. Subscribe once from your phone's calendar app and everything the assistant adds shows up there, with a reminder an hour before.
 - **Private by construction.** The models only listen on localhost. The API is the only thing allowed to talk to them. Add Tailscale and it works from anywhere without opening a single port.
 
 ## What you need
@@ -60,6 +60,7 @@ what isn't configured:
 | `TMDB_API_KEY` | Free key from [themoviedb.org](https://www.themoviedb.org/settings/api) so titles can be looked up |
 | `JELLYFIN_URL` / `JELLYFIN_API_KEY` | Your [Jellyfin](https://jellyfin.org) server and a key from its Dashboard → API Keys, so the app knows what you already own |
 | `MEDIA_ROOT` / `MEDIA_DROPBOX` | The library folder Jellyfin reads, and the folder new files are picked up from |
+| `SCREEN_NAMES` | Optional. Names your TVs after the rooms they're in, e.g. `{"55\" Roku TV":"Front room","Bedroom 2":"Nursery"}` — otherwise they're listed as whatever the TV calls itself |
 
 **How a request becomes a file.** The app keeps the list, the search, the
 pickers and the import. Where a file actually comes from is deliberately one
@@ -83,6 +84,10 @@ Three kinds of TV work, in the order it prefers them:
 | A Jellyfin app that's already open | Jellyfin tells it to play | already on |
 | Chromecast, Google TV, Samsung and others with Cast built in | plays the file straight from Jellyfin | yes |
 | Roku | hands the file to Roku's own player | yes |
+
+TVs name themselves things like `55" Roku TV`, which tells nobody which room
+that is. `SCREEN_NAMES` maps them onto the names your house uses; both names
+keep working, so the name printed on the TV still finds it.
 
 Roku ships with remote control switched **off**. On each Roku, set Settings →
 System → Advanced system settings → Control by mobile apps → Network access to

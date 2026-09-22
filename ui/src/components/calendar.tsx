@@ -186,7 +186,7 @@ export function Calendar({ token }: { token: string }) {
               </ul>
             )}
             <p className="mt-4 text-xs text-muted">
-              Or just tell the assistant: &ldquo;Levi has soccer Saturday at 10 at the park.&rdquo;
+              Or just tell the assistant: &ldquo;Sam has soccer Saturday at 10 at the park.&rdquo;
             </p>
           </div>
         </div>

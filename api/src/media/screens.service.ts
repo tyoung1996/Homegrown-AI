@@ -28,11 +28,41 @@ export type ScreenKind = 'session' | 'cast' | 'roku';
 
 export interface Screen {
   id: string; // what the ui and the assistant pass back
-  name: string; // "Living Room TV"
+  name: string; // what the family calls it: "Front room"
+  deviceName?: string; // what the TV calls itself, when that differs
   kind: ScreenKind;
   address?: string; // ip, for the ones we wake ourselves
   ready: boolean; // true when something is already open on it
   nowPlaying?: string;
+}
+
+/**
+ * A TV names itself something like "55\" Roku TV", which tells the family
+ * nothing about which room it is in. SCREEN_NAMES in the env maps the
+ * device's own name onto the one the house uses:
+ *
+ *   SCREEN_NAMES={"55\" Roku TV":"Front room","Bedroom 2":"Nursery"}
+ *
+ * Renaming the TVs themselves works too, and shows up everywhere rather than
+ * just here — this is for the ones you would rather not go and find the
+ * remote for.
+ */
+function loadNames(): Map<string, string> {
+  const raw = process.env.SCREEN_NAMES?.trim();
+  const map = new Map<string, string>();
+  if (!raw) return map;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    for (const [from, to] of Object.entries(parsed)) {
+      if (typeof to === 'string' && to.trim()) {
+        map.set(normalize(from), to.trim());
+      }
+    }
+  } catch {
+    // a broken map must not take the TVs away — they keep their own names
+    new Logger('Screens').warn('SCREEN_NAMES is not valid JSON, ignoring it');
+  }
+  return map;
 }
 
 @Injectable()
@@ -46,6 +76,7 @@ export class ScreensService {
   private started = new Map<string, { title: string; at: number }>();
   // one play at a time per screen, so two requests for the same TV queue
   private busy = new Map<string, Promise<void>>();
+  private names = loadNames();
 
   constructor(private jellyfin: JellyfinService) {}
 
@@ -199,14 +230,25 @@ export class ScreensService {
         if (!mine || Date.now() - mine.at > 4 * 60 * 60_000) return t;
         return { ...t, ready: true, nowPlaying: mine.title };
       });
-    return [...live, ...rest];
+    return [...live, ...rest].map((s) => this.rename(s));
+  }
+
+  /** Give a screen the name the house uses for it, keeping the device's own
+   * name so the name printed on the TV still finds it. */
+  private rename(screen: Screen): Screen {
+    const friendly = this.names.get(normalize(screen.name));
+    if (!friendly || friendly === screen.name) return screen;
+    return { ...screen, name: friendly, deviceName: screen.name };
   }
 
   async find(id: string): Promise<Screen | null> {
     const all = await this.list();
+    const want = normalize(id);
     return (
       all.find((s) => s.id === id) ??
-      all.find((s) => normalize(s.name) === normalize(id)) ??
+      all.find((s) => normalize(s.name) === want) ??
+      // someone may still call it by the name on the TV itself
+      all.find((s) => s.deviceName && normalize(s.deviceName) === want) ??
       null
     );
   }
@@ -399,9 +441,9 @@ export class ScreensService {
 }
 
 // the same TV rarely gives the same name twice: the Jellyfin app may report
-// "Emmy and Ty's room TV" while the network scan finds "Emmy and Ty's room TV
-// new". Drop the punctuation and the words that say nothing about which room
-// it is in, so both land on "emmy and tys room".
+// "Kids' room TV" while the network scan finds "Kids' room TV new". Drop the
+// punctuation and the words that say nothing about which room it is in, so
+// both land on "kids room".
 const NOISE = /^(tv|television|new|old|4k|uhd|hdr|display|screen|the)$/;
 
 function normalize(name: string): string {

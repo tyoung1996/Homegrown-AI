@@ -224,7 +224,7 @@ export const TOOL_DEFS = [
           location: { type: 'string' },
           who: {
             type: 'string',
-            description: 'Who it is for, e.g. "Levi" or "everyone"',
+            description: 'Who it is for, e.g. a child\'s name or "everyone"',
           },
           notes: { type: 'string' },
         },
@@ -237,7 +237,7 @@ export const TOOL_DEFS = [
     function: {
       name: 'list_events',
       description:
-        'Look at the family calendar. Use for questions like "what\'s this weekend", "when is the dentist", "what does Levi have this week". Dates are local YYYY-MM-DD; defaults to the next 30 days.',
+        'Look at the family calendar. Use for questions like "what\'s this weekend", "when is the dentist", "what does the youngest have this week". Dates are local YYYY-MM-DD; defaults to the next 30 days.',
       parameters: {
         type: 'object',
         properties: {

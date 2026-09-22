@@ -39,7 +39,7 @@ describe('ScreensService listing', () => {
       sessions: [session('s1', 'Living Room TV')],
       tvs: [
         {
-          id: 'cast:192.168.0.52',
+          id: 'cast:10.0.0.11',
           name: 'Kids Room TV',
           kind: 'cast',
           ready: false,
@@ -55,11 +55,11 @@ describe('ScreensService listing', () => {
 
   it('does not list the same TV twice when its app is open', async () => {
     const { service } = build({
-      sessions: [session('s1', "Emmy and Ty's room TV")],
+      sessions: [session('s1', "Kids' room TV")],
       tvs: [
         {
-          id: 'cast:192.168.0.52',
-          name: "Emmy and Ty's room TV new",
+          id: 'cast:10.0.0.11',
+          name: "Kids' room TV new",
           kind: 'cast',
           ready: false,
         },
@@ -73,16 +73,16 @@ describe('ScreensService listing', () => {
     const { service } = build({
       tvs: [
         {
-          id: 'roku:192.168.0.100',
-          name: 'Hangout',
+          id: 'roku:10.0.0.12',
+          name: 'Den TV',
           kind: 'roku',
           ready: false,
         },
       ],
     });
 
-    expect((await service.find('hangout'))?.id).toBe('roku:192.168.0.100');
-    expect((await service.find('roku:192.168.0.100'))?.name).toBe('Hangout');
+    expect((await service.find('den tv'))?.id).toBe('roku:10.0.0.12');
+    expect((await service.find('roku:10.0.0.12'))?.name).toBe('Den TV');
     expect(await service.find('kitchen')).toBeNull();
   });
 });
@@ -133,20 +133,20 @@ describe('ScreensService with more than one person asking', () => {
     const { service } = build({
       tvs: [
         {
-          id: 'roku:192.168.0.106',
-          name: 'Hangout',
+          id: 'roku:10.0.0.13',
+          name: 'Den TV',
           kind: 'roku',
           ready: false,
         },
       ],
     });
     // pretend something was started there a moment ago
-    (service as any).started.set('roku:192.168.0.106', {
+    (service as any).started.set('roku:10.0.0.13', {
       title: 'Encanto',
       at: Date.now(),
     });
 
-    const tv = await service.find('Hangout');
+    const tv = await service.find('Den TV');
 
     expect(tv?.nowPlaying).toBe('Encanto');
     expect(tv?.ready).toBe(true);
@@ -156,19 +156,19 @@ describe('ScreensService with more than one person asking', () => {
     const { service } = build({
       tvs: [
         {
-          id: 'roku:192.168.0.106',
-          name: 'Hangout',
+          id: 'roku:10.0.0.13',
+          name: 'Den TV',
           kind: 'roku',
           ready: false,
         },
       ],
     });
-    (service as any).started.set('roku:192.168.0.106', {
+    (service as any).started.set('roku:10.0.0.13', {
       title: 'Encanto',
       at: Date.now() - 5 * 60 * 60_000,
     });
 
-    expect((await service.find('Hangout'))?.nowPlaying).toBeUndefined();
+    expect((await service.find('Den TV'))?.nowPlaying).toBeUndefined();
   });
 
   it('says what it interrupted', async () => {
@@ -221,5 +221,99 @@ describe('ScreensService with more than one person asking', () => {
     ]);
 
     expect(sweep).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ScreensService naming the TVs after the rooms', () => {
+  const ORIGINAL = process.env.SCREEN_NAMES;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.SCREEN_NAMES;
+    else process.env.SCREEN_NAMES = ORIGINAL;
+  });
+
+  const house = [
+    { id: 'roku:10.0.0.12', name: 'Den TV', kind: 'roku', ready: false },
+    {
+      id: 'roku:10.0.0.14',
+      name: 'Garage tv',
+      kind: 'roku',
+      ready: false,
+    },
+    {
+      id: 'roku:10.0.0.13',
+      name: '55" Roku TV',
+      kind: 'roku',
+      ready: false,
+    },
+    {
+      id: 'cast:10.0.0.15',
+      name: '65" Smart UHD',
+      kind: 'cast',
+      ready: false,
+    },
+  ];
+
+  it('shows the room name instead of whatever the TV calls itself', async () => {
+    process.env.SCREEN_NAMES = JSON.stringify({
+      'Den TV': 'Front room',
+      'Garage tv': 'Nursery',
+      '55" Roku TV': 'Back bedroom',
+      '65" Smart UHD': 'Living room',
+    });
+    const { service } = build({ tvs: house });
+
+    expect((await service.list()).map((s) => s.name)).toEqual([
+      'Front room',
+      'Nursery',
+      'Back bedroom',
+      'Living room',
+    ]);
+  });
+
+  it('still finds a TV by the name printed on it', async () => {
+    process.env.SCREEN_NAMES = JSON.stringify({ 'Den TV': 'Front room' });
+    const { service } = build({ tvs: house });
+
+    expect((await service.find('front room'))?.id).toBe('roku:10.0.0.12');
+    expect((await service.find('den tv'))?.id).toBe('roku:10.0.0.12');
+  });
+
+  it('renames a Jellyfin app on that TV to the same room', async () => {
+    process.env.SCREEN_NAMES = JSON.stringify({ 'Den TV': 'Front room' });
+    const { service } = build({
+      tvs: house,
+      sessions: [{ id: 's1', deviceName: 'Den TV' }],
+    });
+
+    const list = await service.list();
+    const front = list.filter((s) => s.name === 'Front room');
+    // one entry, not the session and the TV listed as two different rooms
+    expect(front).toHaveLength(1);
+    expect(front[0].kind).toBe('session');
+  });
+
+  it('leaves the TVs alone when the map is nonsense', async () => {
+    process.env.SCREEN_NAMES = '{not json';
+    const { service } = build({ tvs: house });
+
+    expect((await service.list()).map((s) => s.name)).toEqual([
+      'Den TV',
+      'Garage tv',
+      '55" Roku TV',
+      '65" Smart UHD',
+    ]);
+  });
+
+  it('says the room name when it starts something there', async () => {
+    process.env.SCREEN_NAMES = JSON.stringify({ 'Den TV': 'Front room' });
+    const { service } = build({
+      tvs: house,
+      sessions: [{ id: 's1', deviceName: 'Den TV' }],
+    });
+    const tv = await service.find('Front room');
+
+    expect(await service.play(tv!, { id: 'm1', name: 'Encanto' })).toBe(
+      'Playing Encanto on Front room',
+    );
   });
 });

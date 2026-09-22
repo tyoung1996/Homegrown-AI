@@ -39,7 +39,7 @@ function build(opts: {
           filePath: null,
           createdAt: new Date(),
           updatedAt: new Date(),
-          user: { displayName: 'Tyler' },
+          user: { displayName: 'Sam' },
         };
         rows.push(row);
         return row;
@@ -47,7 +47,7 @@ function build(opts: {
       update: jest.fn(async ({ where, data }: any) => {
         const row = rows.find((r) => r.id === where.id);
         Object.assign(row, data);
-        return { ...row, user: { displayName: 'Tyler' } };
+        return { ...row, user: { displayName: 'Sam' } };
       }),
       findUnique: jest.fn(
         async ({ where }: any) => rows.find((r) => r.id === where.id) ?? null,
@@ -167,7 +167,7 @@ describe('MediaService requests', () => {
           status: MediaStatus.REQUESTED,
           createdAt: new Date(),
           updatedAt: new Date(),
-          user: { displayName: 'Emilie' },
+          user: { displayName: 'Alex' },
         },
       ],
     });
@@ -176,7 +176,7 @@ describe('MediaService requests', () => {
     expect(outcome.result).toBe('already-requested');
     expect(rows).toHaveLength(1);
     if (outcome.result === 'already-requested') {
-      expect(outcome.request.requestedBy).toBe('Emilie');
+      expect(outcome.request.requestedBy).toBe('Alex');
       expect(outcome.request.mine).toBe(false);
     }
   });

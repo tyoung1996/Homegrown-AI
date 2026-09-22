@@ -312,7 +312,7 @@ export function Studio({
                 value={words}
                 onChange={(e) => setWords(e.target.value)}
                 rows={4}
-                placeholder={'Levi is turning 5!\nSaturday June 7 · 2pm · our house\nRSVP by June 1 · text Emilie'}
+                placeholder={'Sam is turning 5!\nSaturday June 7 · 2pm · our house\nRSVP by June 1 · text Alex'}
                 className="field resize-none text-sm"
               />
               <div className="mt-1.5 flex flex-wrap gap-1.5">
