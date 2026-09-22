@@ -60,7 +60,7 @@ what isn't configured:
 | `TMDB_API_KEY` | Free key from [themoviedb.org](https://www.themoviedb.org/settings/api) so titles can be looked up |
 | `JELLYFIN_URL` / `JELLYFIN_API_KEY` | Your [Jellyfin](https://jellyfin.org) server and a key from its Dashboard → API Keys, so the app knows what you already own |
 | `MEDIA_ROOT` / `MEDIA_DROPBOX` | The library folder Jellyfin reads, and the folder new files are picked up from |
-| `SCREEN_NAMES` | Optional. Names your TVs after the rooms they're in, e.g. `{"55\" Roku TV":"Front room","Bedroom 2":"Nursery"}` — otherwise they're listed as whatever the TV calls itself |
+| `SCREEN_NAMES` | Optional. Names your TVs after the rooms they're in, e.g. `55 Roku TV=Front room; Bedroom 2=Nursery` — otherwise they're listed as whatever the TV calls itself |
 
 **How a request becomes a file.** The app keeps the list, the search, the
 pickers and the import. Where a file actually comes from is deliberately one
@@ -86,8 +86,11 @@ Three kinds of TV work, in the order it prefers them:
 | Roku | hands the file to Roku's own player | yes |
 
 TVs name themselves things like `55" Roku TV`, which tells nobody which room
-that is. `SCREEN_NAMES` maps them onto the names your house uses; both names
-keep working, so the name printed on the TV still finds it.
+that is. `SCREEN_NAMES` maps them onto the names your house uses — pairs
+separated by semicolons, `device name=room name` — and both names keep
+working, so the name printed on the TV still finds it. Punctuation is
+ignored when matching, so leave the inch marks out and save yourself an
+argument with systemd about quotes.
 
 Roku ships with remote control switched **off**. On each Roku, set Settings →
 System → Advanced system settings → Control by mobile apps → Network access to

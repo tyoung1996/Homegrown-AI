@@ -41,7 +41,12 @@ export interface Screen {
  * nothing about which room it is in. SCREEN_NAMES in the env maps the
  * device's own name onto the one the house uses:
  *
- *   SCREEN_NAMES={"55\" Roku TV":"Front room","Bedroom 2":"Nursery"}
+ *   SCREEN_NAMES=Bedroom 2=Nursery; 55 Roku TV=Front room
+ *
+ * Pairs separated by semicolons or newlines, or a JSON object if you prefer.
+ * Names are matched loosely — punctuation and a trailing "TV" are ignored —
+ * so you can leave the inch marks out, which saves fighting with the way
+ * systemd rewrites quotes and backslashes in an EnvironmentFile.
  *
  * Renaming the TVs themselves works too, and shows up everywhere rather than
  * just here — this is for the ones you would rather not go and find the
@@ -51,16 +56,33 @@ function loadNames(): Map<string, string> {
   const raw = process.env.SCREEN_NAMES?.trim();
   const map = new Map<string, string>();
   if (!raw) return map;
-  try {
-    const parsed = JSON.parse(raw) as Record<string, string>;
-    for (const [from, to] of Object.entries(parsed)) {
-      if (typeof to === 'string' && to.trim()) {
-        map.set(normalize(from), to.trim());
+
+  const add = (from: string, to: string) => {
+    if (from.trim() && to.trim()) map.set(normalize(from), to.trim());
+  };
+
+  if (raw.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(raw) as Record<string, string>;
+      for (const [from, to] of Object.entries(parsed)) {
+        if (typeof to === 'string') add(from, to);
       }
+      return map;
+    } catch {
+      // fall through: it is probably the plain form with the quotes eaten
     }
-  } catch {
-    // a broken map must not take the TVs away — they keep their own names
-    new Logger('Screens').warn('SCREEN_NAMES is not valid JSON, ignoring it');
+  }
+
+  for (const pair of raw.split(/[;\n]/)) {
+    const at = pair.indexOf('=');
+    if (at > 0) add(pair.slice(0, at), pair.slice(at + 1));
+  }
+  if (!map.size) {
+    // a broken map must never take the TVs away with it
+    new Logger('Screens').warn(
+      'SCREEN_NAMES could not be read — expected "Device name=Room name" ' +
+        'pairs separated by semicolons. The TVs keep their own names.',
+    );
   }
   return map;
 }

@@ -292,8 +292,38 @@ describe('ScreensService naming the TVs after the rooms', () => {
     expect(front[0].kind).toBe('session');
   });
 
+  it('reads the plain pairs form, which systemd cannot mangle', async () => {
+    process.env.SCREEN_NAMES =
+      'Den TV=Front room; Garage tv=Nursery; 55 Roku TV=Back bedroom';
+    const { service } = build({ tvs: house });
+
+    expect((await service.list()).map((s) => s.name)).toEqual([
+      'Front room',
+      'Nursery',
+      'Back bedroom',
+      '65" Smart UHD',
+    ]);
+  });
+
+  it('matches a TV whose name has punctuation the setting leaves out', async () => {
+    // the TV calls itself '55" Roku TV'; nobody wants to escape that quote
+    process.env.SCREEN_NAMES = '55 Roku TV=Back bedroom';
+    const { service } = build({ tvs: house });
+
+    expect((await service.find('back bedroom'))?.id).toBe('roku:10.0.0.13');
+  });
+
+  it('falls back to pairs when systemd has eaten the JSON quotes', async () => {
+    // what an EnvironmentFile does to {"55\" Roku TV":"Back bedroom"}
+    process.env.SCREEN_NAMES = '{"55" Roku TV":"Back bedroom"}';
+    const { service } = build({ tvs: house });
+
+    // the mangled line is not usable, but the TVs are all still listed
+    expect(await service.list()).toHaveLength(4);
+  });
+
   it('leaves the TVs alone when the map is nonsense', async () => {
-    process.env.SCREEN_NAMES = '{not json';
+    process.env.SCREEN_NAMES = 'complete nonsense, no pairs at all';
     const { service } = build({ tvs: house });
 
     expect((await service.list()).map((s) => s.name)).toEqual([
