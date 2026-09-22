@@ -29,6 +29,13 @@ const MEDIA_TOOL_NAMES = [
   'request_episodes',
   'get_media_request_status',
 ];
+// the watch-it-now tools, hidden when there is no Jellyfin to play from
+const WATCH_TOOL_NAMES = [
+  'find_something_to_watch',
+  'list_tvs',
+  'play_on_tv',
+  'stop_tv',
+];
 
 export type StreamEvent =
   | { type: 'meta'; conversationId: string }
@@ -70,6 +77,26 @@ export type MediaPicker =
         inLibrary: boolean;
         requested: boolean;
       }[];
+    }
+  // "which one?" then "which TV?" — both steps in one card
+  | {
+      mode: 'play';
+      query: string;
+      items: {
+        itemId: string;
+        title: string;
+        year?: number;
+        posterUrl?: string;
+        runtimeMinutes?: number;
+        seriesName?: string;
+      }[];
+      screens: {
+        id: string;
+        name: string;
+        kind: string;
+        ready: boolean;
+        nowPlaying?: string;
+      }[];
     };
 
 // what an assistant message can carry besides its text
@@ -102,7 +129,7 @@ interface OllamaMsg {
 }
 
 const BASE_PROMPT =
-  'You are this family\'s private AI assistant, running on their own home server (the software is called Circuit Barn). ' +
+  "You are this family's private AI assistant, running on their own home server (the software is called Circuit Barn). " +
   'If your memories include a name the family gave you, that IS your name — use it. ' +
   'You talk to a family including children, so always be warm, clear, and family-friendly. ' +
   'You have tools: add_event / list_events / delete_event for the shared family calendar — whenever someone mentions a plan with a date (a game, an appointment, a party, a trip), add it, and always confirm back the exact day and time; answer "what\'s coming up" questions from list_events; ' +
@@ -189,7 +216,10 @@ export class ChatService {
       try {
         uploadedImage = await savePhoto(imageData);
       } catch (e: any) {
-        emit({ type: 'error', message: e.message ?? 'Could not read that photo' });
+        emit({
+          type: 'error',
+          message: e.message ?? 'Could not read that photo',
+        });
         return;
       }
     }
@@ -204,7 +234,13 @@ export class ChatService {
     });
 
     if (uploadedImage) {
-      return this.handleImageMessage(userId, convo.id, message, uploadedImage, emit);
+      return this.handleImageMessage(
+        userId,
+        convo.id,
+        message,
+        uploadedImage,
+        emit,
+      );
     }
 
     const history = await this.prisma.message.findMany({
@@ -215,7 +251,10 @@ export class ChatService {
     history.reverse();
 
     const messages: OllamaMsg[] = [
-      { role: 'system', content: await this.buildSystemPrompt(userId, convo.id) },
+      {
+        role: 'system',
+        content: await this.buildSystemPrompt(userId, convo.id),
+      },
       ...history.map((m) => ({ role: m.role, content: m.content })),
     ];
 
@@ -239,8 +278,12 @@ export class ChatService {
       ? TOOL_DEFS
       : TOOL_DEFS.filter((t) => t.function.name !== 'generate_image');
     // no catalogue key on this server means no library requests to offer
-    if (!(await this.media.health()).catalog.configured) {
+    const can = this.media.capabilities();
+    if (!can.catalog) {
       tools = tools.filter((t) => !MEDIA_TOOL_NAMES.includes(t.function.name));
+    }
+    if (!can.playback) {
+      tools = tools.filter((t) => !WATCH_TOOL_NAMES.includes(t.function.name));
     }
 
     try {
@@ -306,7 +349,12 @@ export class ChatService {
               generatedImage = await this.comfy.generate(p);
               emit({ type: 'image', url: `/images/${generatedImage}` });
               await this.prisma.imageGeneration.create({
-                data: { userId, prompt: p, status: 'done', filePath: generatedImage },
+                data: {
+                  userId,
+                  prompt: p,
+                  status: 'done',
+                  filePath: generatedImage,
+                },
               });
               result =
                 'The image was created and is already displayed to the user. Reply with one short, warm sentence about it. Do not include a link or markdown image.';
@@ -424,6 +472,88 @@ export class ChatService {
             } catch (e: any) {
               result = `Could not add that: ${e.message}`;
             }
+          } else if (name === 'find_something_to_watch') {
+            const query = String(args.query ?? '').trim();
+            emit({ type: 'status', text: `Looking on the shelf for ${query}` });
+            try {
+              // the TVs are found at the same time, so the card can ask
+              // "which one?" and "which TV?" without a second round trip
+              const [items, screens] = await Promise.all([
+                this.media.watchable(query),
+                this.media.listScreens(),
+              ]);
+              if (!items.length) {
+                result = `Nothing matching "${query}" is on the shelf. Offer to add it to the library list instead — that is the search_movies tool.`;
+              } else if (!screens.length) {
+                result = `Found ${items.length} match(es) but no TV is reachable right now. Tell them the TV may need to be plugged in or woken up.`;
+              } else {
+                const picker = {
+                  mode: 'play' as const,
+                  query,
+                  items: items.map((i) => ({
+                    itemId: i.id,
+                    title: i.name,
+                    year: i.year,
+                    posterUrl: i.posterUrl,
+                    runtimeMinutes: i.runtimeMinutes,
+                    seriesName: i.seriesName,
+                  })),
+                  screens: screens.map((s) => ({
+                    id: s.id,
+                    name: s.name,
+                    kind: s.kind,
+                    ready: s.ready,
+                    nowPlaying: s.nowPlaying,
+                  })),
+                };
+                attachment = { picker };
+                emit({ type: 'picker', picker });
+                result =
+                  JSON.stringify({
+                    found: items.map((i) => ({
+                      itemId: i.id,
+                      title: i.name,
+                      year: i.year,
+                    })),
+                    tvs: screens.map((s) => s.name),
+                  }) +
+                  ' — the user can already see these and tap one, then tap a TV. Say in one short line which one(s) you found and ask which they want and where. Do not list them all again.';
+              }
+            } catch (e: any) {
+              result = `Could not look on the shelf: ${e.message}`;
+            }
+          } else if (name === 'list_tvs') {
+            emit({ type: 'status', text: 'Looking for the TVs' });
+            try {
+              const screens = await this.media.listScreens();
+              result = screens.length
+                ? JSON.stringify(
+                    screens.map((s) => ({
+                      tv: s.name,
+                      playing: s.nowPlaying ?? null,
+                    })),
+                  )
+                : 'No TVs are reachable right now.';
+            } catch (e: any) {
+              result = `Could not look for the TVs: ${e.message}`;
+            }
+          } else if (name === 'play_on_tv') {
+            const tv = String(args.tv ?? '').trim();
+            emit({ type: 'status', text: `Putting it on the ${tv}` });
+            try {
+              result =
+                (await this.media.playOn(String(args.itemId ?? ''), tv)) +
+                ' — it is already starting. Confirm in one short, warm line.';
+            } catch (e: any) {
+              result = `It would not start: ${e.message}`;
+            }
+          } else if (name === 'stop_tv') {
+            emit({ type: 'status', text: 'Stopping it' });
+            try {
+              result = await this.media.stopScreen(String(args.tv ?? ''));
+            } catch (e: any) {
+              result = `Could not stop it: ${e.message}`;
+            }
           } else if (name === 'get_media_request_status') {
             emit({ type: 'status', text: 'Checking the library list' });
             const all = await this.media.list(userId);
@@ -469,7 +599,9 @@ export class ChatService {
             );
           } else if (name === 'web_search') {
             emit({ type: 'status', text: `Searching the web: ${args.query}` });
-            const found = await this.tools.webSearchDeep(String(args.query ?? ''));
+            const found = await this.tools.webSearchDeep(
+              String(args.query ?? ''),
+            );
             found.results.forEach((r) => sources.add(r.url));
             result = JSON.stringify(found);
           } else if (name === 'web_fetch') {
@@ -507,7 +639,9 @@ export class ChatService {
     if (sources.size) emit({ type: 'sources', urls: [...sources].slice(0, 8) });
     emit({ type: 'done' });
     // learn from the exchange in the background; never delays the reply
-    void this.reflect(userId, convo.id).catch((e) => this.log.warn(`reflect: ${e.message}`));
+    void this.reflect(userId, convo.id).catch((e) =>
+      this.log.warn(`reflect: ${e.message}`),
+    );
   }
 
   // after each reply: pull out durable facts about the person and keep a
@@ -519,14 +653,21 @@ export class ChatService {
         orderBy: { createdAt: 'desc' },
         take: 6,
       }),
-      this.prisma.memory.findMany({ where: { userId }, select: { content: true } }),
+      this.prisma.memory.findMany({
+        where: { userId },
+        select: { content: true },
+      }),
     ]);
     if (recent.length < 2) return;
     const excerpt = recent
       .reverse()
-      .map((m) => `${m.role === 'user' ? 'USER' : 'ASSISTANT'}: ${m.content.slice(0, 600)}`)
+      .map(
+        (m) =>
+          `${m.role === 'user' ? 'USER' : 'ASSISTANT'}: ${m.content.slice(0, 600)}`,
+      )
       .join('\n');
-    const knownList = known.map((k) => `- ${k.content}`).join('\n') || '(nothing yet)';
+    const knownList =
+      known.map((k) => `- ${k.content}`).join('\n') || '(nothing yet)';
     const res = await fetch(`${OLLAMA}/api/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -556,7 +697,12 @@ export class ChatService {
     } catch {
       return;
     }
-    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const norm = (s: string) =>
+      s
+        .toLowerCase()
+        .replace(/[^a-z0-9 ]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
     const existing = known.map((k) => norm(k.content));
     const facts = Array.isArray(parsed.facts) ? parsed.facts : [];
     let saved = 0;
@@ -565,7 +711,8 @@ export class ChatService {
       const fact = f.trim().slice(0, 200);
       const n = norm(fact);
       if (n.length < 8) continue;
-      if (existing.some((e) => e === n || e.includes(n) || n.includes(e))) continue;
+      if (existing.some((e) => e === n || e.includes(n) || n.includes(e)))
+        continue;
       await this.prisma.memory.create({ data: { content: fact, userId } });
       existing.push(n);
       saved++;
@@ -589,7 +736,10 @@ export class ChatService {
 
   addMemory(userId: string, content: string, family: boolean) {
     return this.prisma.memory.create({
-      data: { content: content.trim().slice(0, 200), userId: family ? null : userId },
+      data: {
+        content: content.trim().slice(0, 200),
+        userId: family ? null : userId,
+      },
       select: { id: true, content: true, userId: true, createdAt: true },
     });
   }
@@ -622,9 +772,9 @@ export class ChatService {
       return;
     }
     emit({ type: 'status', text: 'Looking at your image' });
-    const b64 = (
-      await fs.readFile(path.join(IMAGES_DIR, imageFile))
-    ).toString('base64');
+    const b64 = (await fs.readFile(path.join(IMAGES_DIR, imageFile))).toString(
+      'base64',
+    );
 
     let reply = '';
     let newImage: string | null = null;
@@ -646,7 +796,11 @@ export class ChatService {
                 '3. They want the PERSON in the photo placed into a brand-new scene (e.g. "make me an astronaut", "put her at Hogwarts") -> reply with ONLY one line: "FACESCENE:" followed by a detailed visual prompt of the new scene: the person (man/woman/boy/girl plus their distinctive features like hair color, facial hair, glasses — unless the user asks to change them), outfit, action, setting, lighting.\n' +
                 '4. Anything else -> just answer their question about the image warmly, in Markdown.',
             },
-            { role: 'user', content: message || 'What is in this image?', images: [b64] },
+            {
+              role: 'user',
+              content: message || 'What is in this image?',
+              images: [b64],
+            },
           ],
         }),
       });
@@ -655,16 +809,21 @@ export class ChatService {
       reply = (data.message?.content ?? '').trim();
 
       const upper = reply.toUpperCase();
-      const routed =
-        upper.startsWith('IMG2IMG:') ? 'img2img'
-        : upper.startsWith('REIMAGINE:') ? 'reimagine'
-        : upper.startsWith('FACESCENE:') ? 'facescene'
-        : null;
+      const routed = upper.startsWith('IMG2IMG:')
+        ? 'img2img'
+        : upper.startsWith('REIMAGINE:')
+          ? 'reimagine'
+          : upper.startsWith('FACESCENE:')
+            ? 'facescene'
+            : null;
       if (routed) {
         const prompt = reply.slice(reply.indexOf(':') + 1).trim();
         const src = path.join(IMAGES_DIR, imageFile);
         if (routed === 'facescene') {
-          emit({ type: 'status', text: 'Putting them in the scene (takes about a minute)' });
+          emit({
+            type: 'status',
+            text: 'Putting them in the scene (takes about a minute)',
+          });
           // a real face swap only belongs on photographic-looking results
           const stylized =
             /cartoon|anime|ghibli|pixar|painting|watercolor|comic|illustration|drawing|sketch/i.test(
@@ -676,7 +835,11 @@ export class ChatService {
           });
         } else {
           emit({ type: 'status', text: 'Repainting your image' });
-          newImage = await this.comfy.transform(src, prompt, routed === 'reimagine');
+          newImage = await this.comfy.transform(
+            src,
+            prompt,
+            routed === 'reimagine',
+          );
         }
         emit({ type: 'image', url: `/images/${newImage}` });
         await this.prisma.imageGeneration.create({
@@ -713,19 +876,37 @@ export class ChatService {
     await this.sendStream(userId, message, conversationId, undefined, (ev) => {
       if (ev.type === 'token') reply += ev.text;
       if (ev.type === 'meta') convoId = ev.conversationId;
-      if (ev.type === 'error') throw new InternalServerErrorException(ev.message);
+      if (ev.type === 'error')
+        throw new InternalServerErrorException(ev.message);
     });
     return { conversationId: convoId, reply };
   }
 
-  private async buildSystemPrompt(userId: string, currentConversationId?: string) {
+  private async buildSystemPrompt(
+    userId: string,
+    currentConversationId?: string,
+  ) {
     const [user, mine, family, persona, recent] = await Promise.all([
       this.prisma.user.findUnique({ where: { id: userId } }),
-      this.prisma.memory.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 60 }),
-      this.prisma.memory.findMany({ where: { userId: null }, orderBy: { createdAt: 'desc' }, take: 30 }),
+      this.prisma.memory.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        take: 60,
+      }),
+      this.prisma.memory.findMany({
+        where: { userId: null },
+        orderBy: { createdAt: 'desc' },
+        take: 30,
+      }),
       this.prisma.setting.findUnique({ where: { key: 'persona' } }),
       this.prisma.conversation.findMany({
-        where: { userId, summary: { not: null }, ...(currentConversationId ? { id: { not: currentConversationId } } : {}) },
+        where: {
+          userId,
+          summary: { not: null },
+          ...(currentConversationId
+            ? { id: { not: currentConversationId } }
+            : {}),
+        },
         orderBy: { updatedAt: 'desc' },
         take: 8,
         select: { summary: true, updatedAt: true },
@@ -733,7 +914,9 @@ export class ChatService {
     ]);
     const now = await this.calendar.now();
     // a lookup table beats asking a small model to do weekday arithmetic
-    const upcoming = Array.from({ length: 14 }, (_, i) => now.plus({ days: i }).toFormat('EEE MMM d')).join(', ');
+    const upcoming = Array.from({ length: 14 }, (_, i) =>
+      now.plus({ days: i }).toFormat('EEE MMM d'),
+    ).join(', ');
     let prompt =
       BASE_PROMPT +
       `\nRight now it is ${now.toFormat('EEEE, MMMM d, yyyy h:mm a')} (${now.zoneName}). The next two weeks are: ${upcoming}. When you mention a date back to the user, always include the weekday.`;
@@ -747,10 +930,16 @@ export class ChatService {
     }
     // oldest first so newer facts naturally override older ones
     if (family.length) {
-      prompt += `\n\nAbout the family and about you (treat as true):\n${family.reverse().map((m) => `- ${m.content}`).join('\n')}`;
+      prompt += `\n\nAbout the family and about you (treat as true):\n${family
+        .reverse()
+        .map((m) => `- ${m.content}`)
+        .join('\n')}`;
     }
     if (mine.length) {
-      prompt += `\n\nWhat you know about ${name} (treat as true, use naturally, don't recite):\n${mine.reverse().map((m) => `- ${m.content}`).join('\n')}`;
+      prompt += `\n\nWhat you know about ${name} (treat as true, use naturally, don't recite):\n${mine
+        .reverse()
+        .map((m) => `- ${m.content}`)
+        .join('\n')}`;
     }
     if (recent.length) {
       prompt += `\n\nRecent conversations with ${name}:\n${recent
@@ -772,7 +961,11 @@ export class ChatService {
     } catch {}
     try {
       const comfyUrl = process.env.COMFY_URL ?? 'http://127.0.0.1:8188';
-      comfy = (await fetch(`${comfyUrl}/system_stats`, { signal: AbortSignal.timeout(2000) })).ok;
+      comfy = (
+        await fetch(`${comfyUrl}/system_stats`, {
+          signal: AbortSignal.timeout(2000),
+        })
+      ).ok;
     } catch {}
     this.avail = { at: Date.now(), tags, comfy };
   }

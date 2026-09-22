@@ -7,6 +7,7 @@ import {
   RequestRow,
   statusTone,
   useRequests,
+  posterSrc,
 } from './media-picker';
 
 async function api(
@@ -242,7 +243,7 @@ function Row({ row, onCancel }: { row: RequestRow; onCancel?: () => void }) {
       {row.posterUrl ? (
         /* eslint-disable-next-line @next/next/no-img-element */
         <img
-          src={row.posterUrl}
+          src={posterSrc(row.posterUrl)!}
           alt={row.title}
           loading="lazy"
           className="h-16 w-11 shrink-0 rounded border border-line-2 object-cover"

@@ -8,6 +8,7 @@ function build(opts: {
   shelfEpisodes?: { seasonNumber: number; episodeNumber: number }[];
   rows?: any[];
   sourceAvailable?: boolean;
+  screens?: { id: string; name: string; kind: string; ready: boolean }[];
 }) {
   const rows: any[] = opts.rows ? [...opts.rows] : [];
   const prisma: any = {
@@ -103,12 +104,28 @@ function build(opts: {
     ),
   };
 
+  const screens: any = {
+    list: jest.fn(async () => opts.screens ?? []),
+    find: jest.fn(
+      async (id: string) =>
+        (opts.screens ?? []).find(
+          (s: any) => s.id === id || s.name.toLowerCase() === id.toLowerCase(),
+        ) ?? null,
+    ),
+    play: jest.fn(
+      async (screen: any, item: any) =>
+        `Playing ${item.name} on ${screen.name}`,
+    ),
+    stop: jest.fn(async (screen: any) => `Stopped ${screen.name}`),
+  };
+
   return {
-    service: new MediaService(prisma, catalog, jellyfin, sources),
+    service: new MediaService(prisma, catalog, jellyfin, sources, screens),
     prisma,
     rows,
     jellyfin,
     catalog,
+    screens,
   };
 }
 

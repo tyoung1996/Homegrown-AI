@@ -82,6 +82,40 @@ export class MediaController {
     return this.media.episodes(id, n);
   }
 
+  // ---- watching something we already own ----
+
+  @Get('watchable')
+  watchable(@Query('q') q?: string) {
+    const query = String(q ?? '').trim();
+    if (query.length < 2)
+      throw new BadRequestException('Type a title to search');
+    return this.media.watchable(query);
+  }
+
+  @Get('screens')
+  screens(@Query('refresh') refresh?: string) {
+    return this.media.listScreens(refresh === 'true');
+  }
+
+  @Post('play')
+  play(@Body() body: { itemId?: string; screen?: string }) {
+    const itemId = String(body.itemId ?? '').trim();
+    const screen = String(body.screen ?? '').trim();
+    if (!itemId || !screen) {
+      throw new BadRequestException('Pick something to watch and a TV');
+    }
+    return this.media
+      .playOn(itemId, screen)
+      .then((message) => ({ ok: true, message }));
+  }
+
+  @Post('stop')
+  stop(@Body() body: { screen?: string }) {
+    return this.media
+      .stopScreen(String(body.screen ?? '').trim())
+      .then((message) => ({ ok: true, message }));
+  }
+
   @Get('requests')
   list(@Req() req: AuthedRequest, @Query('all') all?: string) {
     return this.media.list(req.user.userId, all !== 'false');

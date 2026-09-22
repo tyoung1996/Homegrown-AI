@@ -15,11 +15,35 @@ export type PickerItem = {
   requested: boolean;
 };
 
-export type Picker = {
-  mode: 'movies' | 'series';
-  query: string;
-  items: PickerItem[];
+export type WatchItem = {
+  itemId: string;
+  title: string;
+  year?: number;
+  posterUrl?: string;
+  runtimeMinutes?: number;
+  seriesName?: string;
 };
+
+export type ScreenRow = {
+  id: string;
+  name: string;
+  kind: string;
+  ready: boolean;
+  nowPlaying?: string;
+};
+
+export type Picker =
+  | {
+      mode: 'movies' | 'series';
+      query: string;
+      items: PickerItem[];
+    }
+  | {
+      mode: 'play';
+      query: string;
+      items: WatchItem[];
+      screens: ScreenRow[];
+    };
 
 export type RequestRow = {
   id: string;
@@ -78,6 +102,13 @@ export function statusTone(status: string) {
   return 'border-gold/60 text-gold';
 }
 
+// posters are either a catalogue link (an absolute url) or one of ours,
+// which the api gives as a path for the /api proxy to resolve
+export function posterSrc(url?: string | null) {
+  if (!url) return null;
+  return url.startsWith('/') ? `/api${url}` : url;
+}
+
 function Poster({
   url,
   title,
@@ -87,7 +118,8 @@ function Poster({
   title: string;
   wide?: boolean;
 }) {
-  if (!url) {
+  const src = posterSrc(url);
+  if (!src) {
     return (
       <div
         className={`grid shrink-0 place-items-center rounded-md border border-line-2 bg-paper text-center text-[10px] leading-tight text-muted ${
@@ -101,7 +133,7 @@ function Poster({
   return (
     /* eslint-disable-next-line @next/next/no-img-element */
     <img
-      src={url}
+      src={src}
       alt={title}
       loading="lazy"
       className={`shrink-0 rounded-md border border-line-2 object-cover ${
@@ -122,6 +154,22 @@ export function MediaPicker({
   onAdded,
 }: {
   picker: Picker;
+  token: string;
+  onAdded?: () => void;
+}) {
+  // "put it on the TV" is its own little flow — nothing to tick, two taps
+  if (picker.mode === 'play') {
+    return <WatchPicker picker={picker} token={token} />;
+  }
+  return <RequestPicker picker={picker} token={token} onAdded={onAdded} />;
+}
+
+function RequestPicker({
+  picker,
+  token,
+  onAdded,
+}: {
+  picker: Extract<Picker, { mode: 'movies' | 'series' }>;
   token: string;
   onAdded?: () => void;
 }) {
@@ -564,4 +612,156 @@ export function useRequests(token: string) {
     return () => clearInterval(t);
   }, [refresh]);
   return { rows, refresh };
+}
+
+/**
+ * "I want to watch Harry Potter" — pick which one, then pick the TV, and it
+ * starts. The TV list is refreshed when the card opens, because a TV that was
+ * asleep when the question was asked may be awake by the time they tap.
+ */
+function WatchPicker({
+  picker,
+  token,
+}: {
+  picker: Extract<Picker, { mode: 'play' }>;
+  token: string;
+}) {
+  const [item, setItem] = useState<WatchItem | null>(
+    picker.items.length === 1 ? picker.items[0] : null,
+  );
+  const [screens, setScreens] = useState<ScreenRow[]>(picker.screens);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [playing, setPlaying] = useState<string | null>(null);
+  const [error, setError] = useState('');
+
+  // someone else may have turned a TV on (or started something) since the
+  // assistant answered
+  useEffect(() => {
+    let live = true;
+    api('/media/screens', {}, token)
+      .then((rows: ScreenRow[]) => {
+        if (live && rows?.length) setScreens(rows);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [token]);
+
+  async function play(screen: ScreenRow) {
+    if (!item) return;
+    setBusy(screen.id);
+    setError('');
+    try {
+      const res = await api(
+        '/media/play',
+        {
+          method: 'POST',
+          body: JSON.stringify({ itemId: item.itemId, screen: screen.id }),
+        },
+        token,
+      );
+      setPlaying(res.message ?? `Playing on ${screen.name}`);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (playing) {
+    return (
+      <div className="card mt-2 p-3">
+        <p className="eyebrow mb-1">On the TV</p>
+        <p className="text-sm">{playing}</p>
+      </div>
+    );
+  }
+
+  // step one: which one did they mean?
+  if (!item) {
+    return (
+      <div className="card mt-2 p-3">
+        <p className="eyebrow mb-2">Which one?</p>
+        <ul className="space-y-1">
+          {picker.items.map((i) => (
+            <li key={i.itemId}>
+              <button
+                onClick={() => setItem(i)}
+                className="flex w-full items-center gap-3 rounded-md bg-paper px-3 py-2 text-left hover:bg-line-2/40"
+              >
+                <Poster url={i.posterUrl} title={i.title} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium">
+                    {i.seriesName ? `${i.seriesName} — ${i.title}` : i.title}
+                  </span>
+                  <span className="block text-xs text-muted">
+                    {[
+                      i.year,
+                      i.runtimeMinutes ? `${i.runtimeMinutes} min` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </span>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  // step two: which TV?
+  return (
+    <div className="card mt-2 p-3">
+      <div className="mb-3 flex items-center gap-3">
+        <Poster url={item.posterUrl} title={item.title} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-medium">{item.title}</p>
+          <p className="text-xs text-ink-2">Which TV?</p>
+        </div>
+        {picker.items.length > 1 && (
+          <button
+            onClick={() => setItem(null)}
+            className="text-xs text-muted hover:text-red"
+          >
+            back
+          </button>
+        )}
+      </div>
+
+      {screens.length === 0 && (
+        <p className="py-2 text-sm text-muted">
+          No TVs are awake right now. Turn one on and ask again.
+        </p>
+      )}
+
+      <ul className="space-y-1">
+        {screens.map((s) => (
+          <li key={s.id}>
+            <button
+              disabled={!!busy}
+              onClick={() => play(s)}
+              className="flex w-full items-center justify-between gap-3 rounded-md bg-paper px-3 py-2 text-left text-sm hover:bg-line-2/40 disabled:opacity-50"
+            >
+              <span className="min-w-0">
+                <span className="block truncate font-medium">{s.name}</span>
+                {s.nowPlaying && (
+                  <span className="block truncate text-xs text-muted">
+                    playing {s.nowPlaying}
+                  </span>
+                )}
+              </span>
+              <span className="shrink-0 text-xs text-muted">
+                {busy === s.id ? 'starting…' : 'play here'}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      {error && <p className="mt-2 text-sm text-red">{error}</p>}
+    </div>
+  );
 }

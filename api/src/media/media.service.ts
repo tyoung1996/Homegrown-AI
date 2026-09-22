@@ -8,7 +8,8 @@ import {
 import { MediaKind, MediaRequest, MediaStatus, Role } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { CatalogService, CatalogItem } from './catalog.service';
-import { JellyfinService } from './jellyfin.service';
+import { JellyfinService, PlayableItem } from './jellyfin.service';
+import { ScreensService, Screen } from './screens.service';
 import { AcquisitionRegistry } from './acquisition';
 import { titlesMatch } from './filename';
 
@@ -68,20 +69,73 @@ export class MediaService {
     private catalog: CatalogService,
     private jellyfin: JellyfinService,
     private sources: AcquisitionRegistry,
+    private screens: ScreensService,
   ) {}
 
   async health() {
-    const [catalog, jellyfin, source] = await Promise.all([
+    const [catalog, jellyfin, source, screens] = await Promise.all([
       this.catalog.health(),
       this.jellyfin.health(),
       this.sources.pick(),
+      this.screens.list().catch((): Screen[] => []),
     ]);
     return {
       catalog,
       jellyfin,
       source: source ? { name: source.name, label: source.label } : null,
+      screens: screens.map((s) => ({
+        name: s.name,
+        kind: s.kind,
+        ready: s.ready,
+      })),
       ready: catalog.ok,
     };
+  }
+
+  /** What this server can offer, without touching the network — the chat
+   * asks this on every message, so it must not scan or call out. */
+  capabilities(): { catalog: boolean; playback: boolean } {
+    return {
+      catalog: this.catalog.configured(),
+      playback: this.jellyfin.configured(),
+    };
+  }
+
+  // --------------------------------------------------------------- watching
+
+  /** What we own that matches what they said. */
+  watchable(query: string): Promise<PlayableItem[]> {
+    return this.jellyfin.searchPlayable(query);
+  }
+
+  /** The TVs something can go on right now. */
+  listScreens(force = false): Promise<Screen[]> {
+    return this.screens.list(force);
+  }
+
+  /** Put a title on a TV. Both are what the family said — an item id from
+   * watchable(), and a screen id or just the room's name. */
+  async playOn(itemId: string, screenRef: string): Promise<string> {
+    const screen = await this.screens.find(screenRef);
+    if (!screen) {
+      const names = (await this.screens.list()).map((s) => s.name).join(', ');
+      throw new BadRequestException(
+        names
+          ? `I could not find that TV. Right now I can see: ${names}.`
+          : 'I cannot see any TVs on the network right now.',
+      );
+    }
+    const [item] = await this.jellyfin.itemsById([itemId]);
+    if (!item) throw new NotFoundException('That is not in the library');
+    const line = await this.screens.play(screen, item);
+    this.log.log(line);
+    return line;
+  }
+
+  async stopScreen(screenRef: string): Promise<string> {
+    const screen = await this.screens.find(screenRef);
+    if (!screen) throw new BadRequestException('I could not find that TV');
+    return this.screens.stop(screen);
   }
 
   // ---------------------------------------------------------------- looking

@@ -263,6 +263,67 @@ export const TOOL_DEFS = [
   {
     type: 'function',
     function: {
+      name: 'find_something_to_watch',
+      description:
+        'Use this the moment someone wants to WATCH something now — "I want to watch Harry Potter", "put on Encanto", "can we watch a movie". It looks through what the family already owns and shows them the matches to tap, then they pick a TV. Do NOT use search_movies for this; that one is for adding things they do not have.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'The title they said, e.g. "harry potter"',
+          },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_tvs',
+      description:
+        'List the TVs in the house that something can be played on right now. Use when someone asks what TVs there are, or before playing if they have not said which one.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'play_on_tv',
+      description:
+        'Start something playing on a TV. Only use ids that came back from find_something_to_watch in this conversation, and a TV name from list_tvs.',
+      parameters: {
+        type: 'object',
+        properties: {
+          itemId: {
+            type: 'string',
+            description: 'id from find_something_to_watch',
+          },
+          tv: {
+            type: 'string',
+            description: 'the TV name, e.g. "living room"',
+          },
+        },
+        required: ['itemId', 'tv'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'stop_tv',
+      description: 'Stop whatever is playing on a TV.',
+      parameters: {
+        type: 'object',
+        properties: { tv: { type: 'string' } },
+        required: ['tv'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'search_movies',
       description:
         'Look up films by name when someone wants one added to the family library ("add Harry Potter", "can we get Interstellar"). Shows the family a list to pick from, so call this FIRST and let them choose — do not guess which one they meant.',

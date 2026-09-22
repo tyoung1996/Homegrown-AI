@@ -20,6 +20,7 @@ The whole story, from a dusty PC that wouldn't boot to the family using it: [wat
 - **It can see.** Attach a photo and ask about it, restyle it, or put the person into a new scene.
 - **The Studio.** Save a few photos of each family member, then put them anywhere: on a dragon, at Hogwarts, in a Ghibli forest. Two quality tiers — a one-minute draft and an Enhance pass with a face detailer that keeps people looking like themselves.
 - **Movie night.** Ask for a film or a show — "add Harry Potter" — and it shows the matches as tick boxes: pick the ones you want, whole seasons, or single episodes. Everything goes on a shared list you can watch progress on, it tells you what you already own, and anything you add to the server's drop folder is renamed, filed and handed to Jellyfin automatically.
+- **Put it on the TV.** "I want to watch Harry Potter" — it checks what you own, asks which one and which TV, and plays it. It finds the TVs on your network itself and wakes them from standby.
 - **A family calendar the assistant keeps.** "Levi has soccer Saturday at 10" puts it on the shared calendar, dates resolved properly ("next Tuesday" means next Tuesday). Ask "what's this weekend?" and it answers from the calendar. Subscribe once from your phone's calendar app and everything the assistant adds shows up there, with a reminder an hour before.
 - **Private by construction.** The models only listen on localhost. The API is the only thing allowed to talk to them. Add Tailscale and it works from anywhere without opening a single port.
 
@@ -70,6 +71,24 @@ Jellyfin expects, marks the request ready to watch, and tells Jellyfin to
 rescan. Another source — a TV tuner recording off an antenna, a disc ripper —
 implements the same small interface and registers itself; nothing else changes.
 
+**Putting it on the TV.** Say "I want to watch Harry Potter" and it looks
+through what you already own, asks which one you meant and which TV, and
+starts it. Nothing to configure: the app looks around your own network for
+TVs and lists them by the name they already have.
+
+Three kinds of TV work, in the order it prefers them:
+
+| | How it plays | Wakes from standby |
+| --- | --- | --- |
+| A Jellyfin app that's already open | Jellyfin tells it to play | already on |
+| Chromecast, Google TV, Samsung and others with Cast built in | plays the file straight from Jellyfin | yes |
+| Roku | hands the file to Roku's own player | yes |
+
+Roku ships with remote control switched **off**. On each Roku, set Settings →
+System → Advanced system settings → Control by mobile apps → Network access to
+**Default**, or it will refuse — the app will tell you which TV and what to
+change.
+
 ### Use it away from home
 
 The whole app runs on one port (3000 — the UI proxies the API), so it sits behind anything. Three ways in, all without opening a port on your router:
@@ -112,7 +131,7 @@ phones & laptops ──▶ Next.js UI (:3000) ──▶ NestJS API (:3001) ─�
 - `api/prisma/schema.prisma` — the whole product in one file: User, Conversation, Message, Memory, Person, Setting, MediaRequest.
 - `api/src/chat/tools.service.ts` — the assistant's hands.
 - `api/src/chat/comfy.service.ts` — how a picture actually gets made (scene first, then the face).
-- `api/src/media/` — the library list: title lookup, what Jellyfin already has, the drop-folder importer, and the one file that decides where a file comes from.
+- `api/src/media/` — the library list: title lookup, what Jellyfin already has, the drop-folder importer, the TVs on your network, and the one file that decides where a file comes from.
 
 Everything runs on one machine as four systemd services: `circuitbarn-ui`, `circuitbarn-api`, `ollama`, `comfyui`.
 
@@ -126,7 +145,7 @@ The installer is safe to re-run; it only changes what's out of date.
 
 ## Roadmap
 
-Plex requests, home automation, more model families, notifications. Open an issue if something's broken or you want something — the whole point is that this runs in your house, so it should do what your house needs.
+Home automation, more model families, notifications. Open an issue if something's broken or you want something — the whole point is that this runs in your house, so it should do what your house needs.
 
 ## License
 
