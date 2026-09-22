@@ -347,3 +347,85 @@ describe('ScreensService naming the TVs after the rooms', () => {
     );
   });
 });
+
+describe('ScreensService playing on a Roku', () => {
+  const roku = {
+    id: 'roku:10.0.0.12',
+    name: 'Front room',
+    kind: 'roku' as const,
+    address: '10.0.0.12',
+    ready: false,
+  };
+
+  // the bits of a Roku the play path talks to
+  function roku_(opts: {
+    apps?: string;
+    appsStatus?: number;
+    postStatus?: number;
+  }) {
+    const calls: string[] = [];
+    global.fetch = jest.fn(async (url: any, init: any) => {
+      const path = String(url);
+      calls.push(
+        `${init?.method ?? 'GET'} ${path.replace(/^https?:\/\/[^/]+/, '')}`,
+      );
+      if (path.includes('/query/apps')) {
+        return {
+          ok: (opts.appsStatus ?? 200) < 400,
+          status: opts.appsStatus ?? 200,
+          text: async () => opts.apps ?? '<apps></apps>',
+        } as any;
+      }
+      return {
+        ok: (opts.postStatus ?? 200) < 400,
+        status: opts.postStatus ?? 200,
+        text: async () => '',
+      } as any;
+    }) as any;
+    return calls;
+  }
+
+  const withPlayer = '<apps><app id="15985">Roku Media Player</app></apps>';
+  const withoutPlayer = '<apps><app id="12">Netflix</app></apps>';
+  const REAL_FETCH = global.fetch;
+  afterEach(() => {
+    global.fetch = REAL_FETCH;
+  });
+
+  it('says what to install when the TV has no media player channel', async () => {
+    const { service } = build({});
+    roku_({ apps: withoutPlayer });
+
+    await expect(
+      service.play(roku, { id: 'm1', name: 'Encanto' }),
+    ).rejects.toThrow(/Roku Media Player/);
+  });
+
+  it('wakes the TV and hands the film to the player', async () => {
+    const { service } = build({});
+    const calls = roku_({ apps: withPlayer });
+
+    await service.play(roku, { id: 'm1', name: 'Encanto' });
+
+    expect(calls).toContain('POST /keypress/PowerOn');
+    expect(calls.some((c) => c.startsWith('POST /launch/15985?'))).toBe(true);
+  });
+
+  it('explains the setting rather than reporting a bare failure', async () => {
+    const { service } = build({});
+    roku_({ apps: withPlayer, postStatus: 403 });
+
+    await expect(
+      service.play(roku, { id: 'm1', name: 'Encanto' }),
+    ).rejects.toThrow(/Control by mobile apps/);
+  });
+
+  it('still tries when the TV will not say what it has installed', async () => {
+    const { service } = build({});
+    const calls = roku_({ appsStatus: 403 });
+
+    await service.play(roku, { id: 'm1', name: 'Encanto' });
+
+    expect(calls.some((c) => c.startsWith('POST /launch/15985?'))).toBe(true);
+  });
+});

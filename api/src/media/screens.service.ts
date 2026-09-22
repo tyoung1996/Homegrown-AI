@@ -23,6 +23,10 @@ const ROKU_PORT = 8060;
 const SCAN_CACHE_MS = 5 * 60_000;
 const PROBE_TIMEOUT_MS = 400;
 const CAST_LAUNCH_TIMEOUT_MS = 15_000;
+// Roku's own free Media Player channel: the one that will play a url handed
+// to it. It ships on most Rokus but not all — plenty of TVs arrive with only
+// the streaming services on them.
+const ROKU_MEDIA_PLAYER = '15985';
 
 export type ScreenKind = 'session' | 'cast' | 'roku';
 
@@ -329,18 +333,32 @@ export class ScreensService {
   // roku: wake it, then hand the file to the player its own remote app uses
   private async playOnRoku(screen: Screen, url: string, title: string) {
     const base = `http://${screen.address}:${ROKU_PORT}`;
+    const refused = () =>
+      new Error(
+        `${screen.name} is refusing commands. On that TV: Settings > System > ` +
+          'Advanced system settings > Control by mobile apps > Network access ' +
+          'needs to be Enabled (some remotes call it Default) — Limited is not ' +
+          'enough.',
+      );
     const post = async (path: string) => {
       const res = await fetch(base + path, {
         method: 'POST',
         signal: AbortSignal.timeout(6000),
       });
-      if (res.status === 403) {
-        throw new Error(
-          `${screen.name} is refusing commands — on that TV, Settings > System > Advanced system settings > Control by mobile apps > Network access needs to be Default`,
-        );
-      }
+      if (res.status === 403) throw refused();
       return res.ok;
     };
+
+    // a Roku without the Media Player channel has nothing to hand the film
+    // to, and the launch would fail with nothing useful to say
+    if (!(await this.rokuHasMediaPlayer(base))) {
+      throw new Error(
+        `${screen.name} needs Roku's free "Roku Media Player" channel before ` +
+          'it can play anything from here. Add it once from the Roku channel ' +
+          'store on that TV.',
+      );
+    }
+
     await post('/keypress/PowerOn').catch(() => false);
     await new Promise((r) => setTimeout(r, 2500));
     const params = new URLSearchParams({
@@ -349,8 +367,24 @@ export class ScreensService {
       videoName: title,
       videoFormat: 'mp4',
     });
-    const ok = await post(`/launch/15985?${params.toString()}`);
+    const ok = await post(`/launch/${ROKU_MEDIA_PLAYER}?${params.toString()}`);
     if (!ok) throw new Error(`${screen.name} would not start the player`);
+  }
+
+  /** Is the channel we hand films to actually on this Roku? A TV that will
+   * not tell us gets the benefit of the doubt — better to try and fail than
+   * to refuse something that would have worked. */
+  private async rokuHasMediaPlayer(base: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${base}/query/apps`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) return true;
+      const body = await res.text();
+      return new RegExp(`id="${ROKU_MEDIA_PLAYER}"`).test(body);
+    } catch {
+      return true;
+    }
   }
 
   // chromecast-style: launching the receiver is what wakes the tv

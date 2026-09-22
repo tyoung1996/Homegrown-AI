@@ -92,10 +92,16 @@ working, so the name printed on the TV still finds it. Punctuation is
 ignored when matching, so leave the inch marks out and save yourself an
 argument with systemd about quotes.
 
-Roku ships with remote control switched **off**. On each Roku, set Settings →
-System → Advanced system settings → Control by mobile apps → Network access to
-**Default**, or it will refuse — the app will tell you which TV and what to
-change.
+Roku needs two things done once per TV, and the app will name the TV and the
+fix if either is missing:
+
+- **Remote control is off out of the box.** Settings → System → Advanced
+  system settings → Control by mobile apps → Network access → **Enabled**
+  (older remotes say *Default*). *Limited* is not enough — it accepts the
+  harmless commands and refuses the ones that start a film.
+- **Roku Media Player has to be installed.** That free official channel is
+  what a Roku hands the file to, and many TVs ship without it. Add it from
+  the channel store on that TV.
 
 ### Use it away from home
 
