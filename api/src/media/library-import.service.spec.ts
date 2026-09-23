@@ -34,6 +34,7 @@ function services(match: any = null) {
     // after every pass
     confirmImported: jest.fn(async () => []),
     pollProviders: jest.fn(async () => 0),
+    retryUnclaimed: jest.fn(async () => 0),
   };
   const jellyfin = { refreshLibrary: jest.fn(async () => undefined) };
   return { media, jellyfin };

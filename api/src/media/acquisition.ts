@@ -55,6 +55,13 @@ export interface AcquisitionSource {
   readonly name: string;
   /** what the admin panel calls it; the family never sees this */
   readonly label: string;
+  /**
+   * Does this provider go and get things by itself? A watched folder does
+   * not — it takes a request on and waits for someone to put a file there,
+   * which is a perfectly good answer but not an automatic one. Providers
+   * that fetch say true and are preferred when both could take a request.
+   */
+  readonly automatic?: boolean;
 
   /** Can this provider do anything about this sort of thing at all? Asked
    * before availability, because it never changes. */
@@ -103,6 +110,8 @@ const ALL_KINDS: MediaKind[] = [
 export class DropFolderSource implements AcquisitionSource {
   readonly name = 'drop-folder';
   readonly label = 'Watched folder';
+  // it waits for a file; it does not go and find one
+  readonly automatic = false;
   private log = new Logger('DropFolder');
 
   /** anything: a file is a file, whatever it is of */
@@ -194,10 +203,25 @@ export class AcquisitionRegistry {
    * the request.
    */
   async pickFor(kind: MediaKind): Promise<AcquisitionSource | null> {
-    for (const source of this.capableOf(kind)) {
+    const capable = this.capableOf(kind);
+    // a provider that fetches is preferred over one that waits, whatever
+    // the configured order says — waiting is always still there behind it
+    for (const source of capable.filter((s) => s.automatic)) {
+      if (await this.isUp(source)) return source;
+    }
+    for (const source of capable.filter((s) => !s.automatic)) {
       if (await this.isUp(source)) return source;
     }
     return null;
+  }
+
+  /** Could anything fetch this sort of thing by itself right now? The
+   * answer the admin panel wants, and nothing the family needs to know. */
+  async canFetch(kind: MediaKind): Promise<boolean> {
+    for (const source of this.capableOf(kind).filter((s) => s.automatic)) {
+      if (await this.isUp(source)) return true;
+    }
+    return false;
   }
 
   /** Kept for callers that only want to know whether anything works at all. */
@@ -302,6 +326,13 @@ export class AcquisitionRegistry {
       const source = await this.pickFor(kind);
       out[kind] = source?.name ?? null;
     }
+    return out;
+  }
+
+  /** Which kinds something could go and fetch by itself right now. */
+  async automatic(): Promise<Record<string, boolean>> {
+    const out: Record<string, boolean> = {};
+    for (const kind of ALL_KINDS) out[kind] = await this.canFetch(kind);
     return out;
   }
 

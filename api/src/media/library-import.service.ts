@@ -98,6 +98,12 @@ export class LibraryImportService implements OnModuleInit, OnModuleDestroy {
       this.seen.delete(file);
     }
     if (imported.length) await this.jellyfin.refreshLibrary();
+    // anything nobody could take on when it was asked for gets another go
+    await this.media
+      .retryUnclaimed()
+      .catch((e: unknown) =>
+        this.log.warn(`retrying unclaimed failed: ${(e as Error).message}`),
+      );
     // providers working in the background get asked how they are doing
     await this.media
       .pollProviders()

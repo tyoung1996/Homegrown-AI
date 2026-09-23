@@ -58,6 +58,7 @@ interface IaSearchRow {
 export class InternetArchiveSource implements AcquisitionSource {
   readonly name = 'internet-archive';
   readonly label = 'Internet Archive';
+  readonly automatic = true;
   private log = new Logger('InternetArchive');
 
   /** progress for the admin panel only; the truth about what is finished

@@ -300,12 +300,15 @@ describe('MediaService requests', () => {
     expect(outcome.label).toBe('The Office — S3E7');
   });
 
-  it('marks a request unavailable when nothing can bring files in', async () => {
+  it('keeps a request on the list when nothing can bring files in', async () => {
     const { service, rows } = build({ sourceAvailable: false });
     await service.requestMovies('u1', [157336]);
 
-    expect(rows[0].status).toBe(MediaStatus.UNAVAILABLE);
-    expect(rows[0].statusNote).toMatch(/no way to add files/i);
+    // wanted and not here yet is the truth; "couldn't add it" would be a
+    // guess about the future
+    expect(rows[0].status).toBe(MediaStatus.REQUESTED);
+    expect(rows[0].statusNote).toBe('On the list');
+    expect(rows[0].adminNote).toMatch(/no automatic source/i);
   });
 });
 
@@ -748,8 +751,8 @@ describe('when the way files arrive is having a bad day', () => {
 
     expect(outcome.result).toBe('queued');
     if (outcome.result === 'queued') {
-      expect(outcome.request.status).toBe(MediaStatus.UNAVAILABLE);
-      expect(outcome.request.statusText).toBe("Couldn't add it");
+      expect(outcome.request.status).toBe(MediaStatus.REQUESTED);
+      expect(outcome.request.statusText).toBe('On the list');
     }
   });
 
@@ -855,7 +858,7 @@ describe('the list with more than one provider behind it', () => {
     expect(rows[0].source).toBe('anything');
   });
 
-  it('says so plainly when nothing can take that sort of request', async () => {
+  it('keeps a kind nobody handles on the list, and says why to an admin', async () => {
     const { service } = build({
       providers: [provider('films', [MediaKind.MOVIE])],
     });
@@ -863,9 +866,11 @@ describe('the list with more than one provider behind it', () => {
     const [outcome] = await service.requestSeries('u1', 2316, []);
 
     if (outcome.result === 'queued') {
-      expect(outcome.request.status).toBe(MediaStatus.UNAVAILABLE);
-      expect(outcome.request.statusText).toBe("Couldn't add it");
+      expect(outcome.request.status).toBe(MediaStatus.REQUESTED);
+      expect(outcome.request.statusText).toBe('On the list');
     }
+    const [admin] = await service.list('u1', true, Role.ADMIN);
+    expect(admin.adminNote).toMatch(/no automatic source/i);
   });
 
   it('will not let any provider make something ready to watch', async () => {
@@ -988,5 +993,119 @@ describe('with every provider down', () => {
       name: 'dead',
       ok: false,
     });
+  });
+});
+
+describe('anything in the catalogue can be asked for', () => {
+  // a provider that fetches, and one that only waits
+  const fetcher = (kinds: MediaKind[], up = true): AcquisitionSource => ({
+    name: 'fetcher',
+    label: 'Fetcher',
+    automatic: true,
+    supports: (k) => kinds.includes(k),
+    available: async () => up,
+    start: async () => ({
+      status: MediaStatus.ACQUIRING,
+      note: 'Adding it to the library',
+    }),
+  });
+  const waiter: AcquisitionSource = {
+    name: 'waiter',
+    label: 'Watched folder',
+    automatic: false,
+    supports: () => true,
+    available: async () => true,
+    start: async () => ({
+      status: MediaStatus.REQUESTED,
+      note: 'On the list — it will appear here once the file is added.',
+    }),
+  };
+
+  it('keeps a film nothing can fetch on the list rather than failing it', async () => {
+    const { service, rows } = build({ providers: [fetcher([], false)] });
+
+    const [outcome] = await service.requestMovies('u1', [157336]);
+
+    expect(outcome.result).toBe('queued');
+    expect(rows[0].status).toBe(MediaStatus.REQUESTED);
+    if (outcome.result === 'queued') {
+      expect(outcome.request.statusText).toBe('On the list');
+      expect(outcome.request.status).not.toBe(MediaStatus.UNAVAILABLE);
+    }
+  });
+
+  it('tells an admin why, and tells the family nothing technical', async () => {
+    const { service, rows } = build({ providers: [fetcher([], false)] });
+    await service.requestMovies('u1', [157336]);
+
+    const [family] = await service.list('u1');
+    const [admin] = await service.list('u1', true, Role.ADMIN);
+
+    expect(admin.adminNote).toMatch(/no automatic source/i);
+    expect(family.adminNote).toBeUndefined();
+    // and nothing technical leaks through the note the family does see
+    expect(JSON.stringify(family)).not.toMatch(
+      /provider|source|fetch|archive|automatic/i,
+    );
+    expect(rows[0].adminNote).toBeTruthy();
+  });
+
+  it('prefers a provider that fetches over one that only waits', async () => {
+    const { service, rows } = build({
+      providers: [waiter, fetcher([MediaKind.MOVIE])],
+    });
+
+    await service.requestMovies('u1', [157336]);
+
+    expect(rows[0].source).toBe('fetcher');
+    expect(rows[0].status).toBe(MediaStatus.ACQUIRING);
+  });
+
+  it('falls back to waiting for a kind nothing can fetch', async () => {
+    const { service, rows } = build({
+      providers: [waiter, fetcher([MediaKind.MOVIE])],
+    });
+
+    await service.requestSeries('u1', 2316, []);
+
+    expect(rows[0].source).toBe('waiter');
+    expect(rows[0].status).toBe(MediaStatus.REQUESTED);
+    // an admin can see that nothing will go and get it by itself
+    const [admin] = await service.list('u1', true, Role.ADMIN);
+    expect(admin.adminNote).toMatch(/no automatic source/i);
+  });
+
+  it('picks up what was waiting once a provider can take it', async () => {
+    const { service, rows } = build({ providers: [fetcher([], false)] });
+    await service.requestMovies('u1', [157336]);
+    expect(rows[0].source).toBeNull();
+
+    // the same request, now that something can fetch films
+    const { service: later } = build({
+      providers: [fetcher([MediaKind.MOVIE])],
+      rows,
+    });
+    const claimed = await later.retryUnclaimed();
+
+    expect(claimed).toBe(1);
+    expect(rows[0].source).toBe('fetcher');
+    expect(rows[0].status).toBe(MediaStatus.ACQUIRING);
+  });
+
+  it('does not narrow what can be searched for to what can be fetched', async () => {
+    // nothing can fetch anything, and Oppenheimer is still findable
+    const { service } = build({
+      providers: [fetcher([], false)],
+      catalogMovies: [{ catalogId: 872585, title: 'Oppenheimer', year: 2023 }],
+      playable: [],
+    });
+
+    const found = await service.lookFor('watch Oppenheimer');
+
+    expect(found.mode).toBe('missing');
+    if (found.mode === 'missing') {
+      expect(found.films[0].title).toBe('Oppenheimer');
+    }
+    expect(await service.searchMovies('Oppenheimer')).toHaveLength(1);
   });
 });

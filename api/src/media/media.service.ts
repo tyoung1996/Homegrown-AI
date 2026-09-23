@@ -55,6 +55,8 @@ export interface MediaRequestView {
   status: MediaStatus;
   statusText: string;
   statusNote: string | null;
+  /** only ever present for an admin */
+  adminNote?: string;
   requestedBy: string;
   mine: boolean;
   createdAt: Date;
@@ -147,6 +149,10 @@ export class MediaService {
         routing: await this.sources
           .routing()
           .catch((): Record<string, string | null> => ({})),
+        // and which of those would actually go and fetch it
+        automatic: await this.sources
+          .automatic()
+          .catch((): Record<string, boolean> => ({})),
       },
       screens: screens.map((s) => ({
         name: s.name,
@@ -538,21 +544,25 @@ export class MediaService {
       include: { user: { select: { displayName: true } } },
     });
 
-    // hand it to whatever can actually bring in this sort of thing. which
-    // provider that is, and what it is allowed to say, is the registry's
-    // business — nothing here knows one provider from another
+    // hand it to whatever can bring in this sort of thing. which provider
+    // that is, and what it is allowed to say, is the registry's business —
+    // nothing here knows one provider from another.
+    //
+    // anything in the catalogue can be asked for, whether or not something
+    // can go and fetch it today. a request nobody can fetch stays on the
+    // list, because that is what it is: wanted, and not here yet. saying
+    // "couldn't add it" would be a lie about the future.
     const source = await this.sources.pickFor(kind);
     const updated = source
       ? await this.applySource(
           created,
           source.name,
           await this.sources.handOff(source, created),
+          source.automatic
+            ? undefined
+            : 'No automatic source for this — waiting for a file.',
         )
-      : await this.setStatus(
-          created.id,
-          MediaStatus.UNAVAILABLE,
-          'No way to add files is set up on this server yet.',
-        );
+      : await this.shelve(created);
 
     this.log.log(`requested ${label} (${updated.status})`);
     return { result: 'queued', label, request: this.view(updated, userId) };
@@ -562,6 +572,7 @@ export class MediaService {
     request: MediaRequest,
     source: string,
     outcome: ProviderResult,
+    adminNote?: string,
   ) {
     return this.prisma.mediaRequest.update({
       where: { id: request.id },
@@ -569,10 +580,56 @@ export class MediaService {
         status: outcome.status,
         statusNote: outcome.note,
         source,
+        adminNote: adminNote ?? null,
         ...(outcome.ref ? { sourceRef: outcome.ref } : {}),
       },
       include: { user: { select: { displayName: true } } },
     });
+  }
+
+  /** Nothing can take this on today. It stays on the list all the same —
+   * the family asked for it, and a provider configured tomorrow will pick
+   * it up. The reason is written down where only an admin will read it. */
+  private async shelve(request: MediaRequest) {
+    return this.prisma.mediaRequest.update({
+      where: { id: request.id },
+      data: {
+        status: MediaStatus.REQUESTED,
+        statusNote: 'On the list',
+        source: null,
+        adminNote:
+          'No automatic source currently available, and nothing is watching ' +
+          'for a file either.',
+      },
+      include: { user: { select: { displayName: true } } },
+    });
+  }
+
+  /**
+   * Requests nobody could take on when they were made. Asked about again
+   * each sweep, so switching a provider on picks up what is already waiting
+   * rather than needing everything asked for twice.
+   */
+  async retryUnclaimed(): Promise<number> {
+    const waiting = await this.prisma.mediaRequest.findMany({
+      where: { status: MediaStatus.REQUESTED, source: null },
+      take: 25,
+    });
+    let claimed = 0;
+    for (const row of waiting) {
+      const source = await this.sources.pickFor(row.kind);
+      if (!source) continue;
+      await this.applySource(
+        row,
+        source.name,
+        await this.sources.handOff(source, row),
+        source.automatic
+          ? undefined
+          : 'No automatic source for this — waiting for a file.',
+      );
+      claimed++;
+    }
+    return claimed;
   }
 
   /**
@@ -636,7 +693,11 @@ export class MediaService {
 
   // --------------------------------------------------------------- the list
 
-  async list(userId: string, includeDone = true): Promise<MediaRequestView[]> {
+  async list(
+    userId: string,
+    includeDone = true,
+    role?: Role,
+  ): Promise<MediaRequestView[]> {
     const rows = await this.prisma.mediaRequest.findMany({
       where: includeDone
         ? {}
@@ -645,16 +706,20 @@ export class MediaService {
       take: 200,
       include: { user: { select: { displayName: true } } },
     });
-    return rows.map((r) => this.view(r, userId));
+    return rows.map((r) => this.view(r, userId, role));
   }
 
-  async get(id: string, userId: string): Promise<MediaRequestView> {
+  async get(
+    id: string,
+    userId: string,
+    role?: Role,
+  ): Promise<MediaRequestView> {
     const row = await this.prisma.mediaRequest.findUnique({
       where: { id },
       include: { user: { select: { displayName: true } } },
     });
     if (!row) throw new NotFoundException('No such request');
-    return this.view(row, userId);
+    return this.view(row, userId, role);
   }
 
   async cancel(id: string, userId: string, role: Role) {
@@ -800,6 +865,7 @@ export class MediaService {
   view(
     row: MediaRequest & { user?: { displayName: string } },
     viewerId: string,
+    role?: Role,
   ): MediaRequestView {
     return {
       id: row.id,
@@ -814,6 +880,10 @@ export class MediaService {
       status: row.status,
       statusText: STATUS_TEXT[row.status],
       statusNote: row.statusNote,
+      // the technical why never leaves the admin panel
+      ...(role === Role.ADMIN && row.adminNote
+        ? { adminNote: row.adminNote }
+        : {}),
       requestedBy: row.user?.displayName ?? 'someone',
       mine: row.userId === viewerId,
       createdAt: row.createdAt,

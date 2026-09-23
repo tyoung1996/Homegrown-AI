@@ -135,12 +135,12 @@ export class MediaController {
 
   @Get('requests')
   list(@Req() req: AuthedRequest, @Query('all') all?: string) {
-    return this.media.list(req.user.userId, all !== 'false');
+    return this.media.list(req.user.userId, all !== 'false', req.user.role);
   }
 
   @Get('requests/:id')
   one(@Req() req: AuthedRequest, @Param('id') id: string) {
-    return this.media.get(id, req.user.userId);
+    return this.media.get(id, req.user.userId, req.user.role);
   }
 
   @Post('requests')

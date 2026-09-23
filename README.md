@@ -79,8 +79,11 @@ Jellyfin expects, marks the request ready to watch, and tells Jellyfin to
 rescan. Another source — a TV tuner recording off an antenna, a disc ripper —
 implements the same small interface and registers itself; nothing else changes.
 
-**Asking for something you don't have.** Ask to watch something that isn't
-on the shelf and it says so, and offers to put it on the list — it never
+**Asking for something you don't have.** Anything the catalogue knows about
+can be asked for, whether or not anything on your server can go and fetch
+it — a request nobody can fulfil today stays on the list, because that is
+what it is: wanted, and not here yet. Ask to watch something that isn't on
+the shelf and it says so, and offers to put it on the list — it never
 turns "I want to watch X" into a request on its own. Shows are understood
 season by season: it can tell you that you have series one and two, that
 three is two episodes short and four is missing, and ask for only the gaps.
