@@ -60,6 +60,7 @@ what isn't configured:
 | `TMDB_API_KEY` | Free key from [themoviedb.org](https://www.themoviedb.org/settings/api) so titles can be looked up |
 | `JELLYFIN_URL` / `JELLYFIN_API_KEY` | Your [Jellyfin](https://jellyfin.org) server and a key from its Dashboard → API Keys, so the app knows what you already own |
 | `MEDIA_ROOT` / `MEDIA_DROPBOX` | The library folder Jellyfin reads, and the folder new files are picked up from |
+| `ROKU_APP_WAIT_MS` | Optional, default 30000. How long to give the Jellyfin app on a Roku to start before giving up |
 | `SCREEN_NAMES` | Optional. Names your TVs after the rooms they're in, e.g. `55 Roku TV=Front room; Bedroom 2=Nursery` — otherwise they're listed as whatever the TV calls itself |
 
 **How a request becomes a file.** The app keeps the list, the search, the
@@ -99,9 +100,11 @@ fix if either is missing:
   system settings → Control by mobile apps → Network access → **Enabled**
   (older remotes say *Default*). *Limited* is not enough — it accepts the
   harmless commands and refuses the ones that start a film.
-- **Roku Media Player has to be installed.** That free official channel is
-  what a Roku hands the file to, and many TVs ship without it. Add it from
-  the channel store on that TV.
+- **Install the free Jellyfin channel** from the Roku channel store and sign
+  it in once. The app opens it for you and plays through it, which is why a
+  Roku gets the same subtitles and resume position as everything else. (The
+  *Roku Media Player* channel is not a substitute — it ignores a file handed
+  to it this way.)
 
 ### Use it away from home
 

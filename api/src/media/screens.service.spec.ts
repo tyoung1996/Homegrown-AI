@@ -351,29 +351,31 @@ describe('ScreensService naming the TVs after the rooms', () => {
 describe('ScreensService playing on a Roku', () => {
   const roku = {
     id: 'roku:10.0.0.12',
-    name: 'Front room',
+    name: "Bray's room",
+    deviceName: 'Workout tv',
     kind: 'roku' as const,
     address: '10.0.0.12',
     ready: false,
   };
 
-  // the bits of a Roku the play path talks to
-  function roku_(opts: {
-    apps?: string;
-    appsStatus?: number;
-    postStatus?: number;
-  }) {
+  const apps = (...rows: [string, string][]) =>
+    `<apps>${rows.map(([id, n]) => `<app id="${id}">${n}</app>`).join('')}</apps>`;
+
+  const REAL_FETCH = global.fetch;
+  afterEach(() => {
+    global.fetch = REAL_FETCH;
+  });
+
+  function roku_(opts: { apps?: string; postStatus?: number }) {
     const calls: string[] = [];
     global.fetch = jest.fn(async (url: any, init: any) => {
-      const path = String(url);
-      calls.push(
-        `${init?.method ?? 'GET'} ${path.replace(/^https?:\/\/[^/]+/, '')}`,
-      );
-      if (path.includes('/query/apps')) {
+      const path = String(url).replace(/^https?:\/\/[^/]+/, '');
+      calls.push(`${init?.method ?? 'GET'} ${path}`);
+      if (path.startsWith('/query/apps')) {
         return {
-          ok: (opts.appsStatus ?? 200) < 400,
-          status: opts.appsStatus ?? 200,
-          text: async () => opts.apps ?? '<apps></apps>',
+          ok: true,
+          status: 200,
+          text: async () => opts.apps ?? apps(),
         } as any;
       }
       return {
@@ -385,47 +387,60 @@ describe('ScreensService playing on a Roku', () => {
     return calls;
   }
 
-  const withPlayer = '<apps><app id="15985">Roku Media Player</app></apps>';
-  const withoutPlayer = '<apps><app id="12">Netflix</app></apps>';
-  const REAL_FETCH = global.fetch;
-  afterEach(() => {
-    global.fetch = REAL_FETCH;
-  });
-
-  it('says what to install when the TV has no media player channel', async () => {
-    const { service } = build({});
-    roku_({ apps: withoutPlayer });
-
-    await expect(
-      service.play(roku, { id: 'm1', name: 'Encanto' }),
-    ).rejects.toThrow(/Roku Media Player/);
-  });
-
-  it('wakes the TV and hands the film to the player', async () => {
-    const { service } = build({});
-    const calls = roku_({ apps: withPlayer });
+  it('opens the Jellyfin app and plays through it once it checks in', async () => {
+    // the app is not running yet; it checks in on the second look
+    let looks = 0;
+    const { service, jellyfin } = build({});
+    jellyfin.sessions = jest.fn(async () =>
+      ++looks < 2 ? [] : [{ id: 'sess-1', deviceName: 'Workout tv' }],
+    );
+    const calls = roku_({
+      apps: apps(['592369', 'Jellyfin'], ['12', 'Netflix']),
+    });
 
     await service.play(roku, { id: 'm1', name: 'Encanto' });
 
     expect(calls).toContain('POST /keypress/PowerOn');
+    expect(calls).toContain('POST /launch/592369');
+    expect(jellyfin.playOnSession).toHaveBeenCalledWith('sess-1', 'm1');
+  });
+
+  it('says to install Jellyfin when the TV has no way to play', async () => {
+    const { service } = build({});
+    roku_({ apps: apps(['12', 'Netflix'], ['2213', 'Roku Media Player']) });
+
+    await expect(
+      service.play(roku, { id: 'm1', name: 'Encanto' }),
+    ).rejects.toThrow(/Jellyfin channel/);
+  });
+
+  it('falls back to the push-a-url channel on a TV that has it', async () => {
+    const { service } = build({});
+    const calls = roku_({ apps: apps(['15985', 'Play on Roku']) });
+
+    await service.play(roku, { id: 'm1', name: 'Encanto' });
+
     expect(calls.some((c) => c.startsWith('POST /launch/15985?'))).toBe(true);
   });
 
   it('explains the setting rather than reporting a bare failure', async () => {
     const { service } = build({});
-    roku_({ apps: withPlayer, postStatus: 403 });
+    roku_({ apps: apps(['592369', 'Jellyfin']), postStatus: 403 });
 
     await expect(
       service.play(roku, { id: 'm1', name: 'Encanto' }),
     ).rejects.toThrow(/Control by mobile apps/);
   });
 
-  it('still tries when the TV will not say what it has installed', async () => {
-    const { service } = build({});
-    const calls = roku_({ appsStatus: 403 });
+  it('gives up cleanly when the app never checks in', async () => {
+    process.env.ROKU_APP_WAIT_MS = '600';
+    const { service, jellyfin } = build({});
+    jellyfin.sessions = jest.fn(async () => []);
+    roku_({ apps: apps(['592369', 'Jellyfin']) });
 
-    await service.play(roku, { id: 'm1', name: 'Encanto' });
-
-    expect(calls.some((c) => c.startsWith('POST /launch/15985?'))).toBe(true);
+    await expect(
+      service.play(roku, { id: 'm1', name: 'Encanto' }),
+    ).rejects.toThrow(/never checked in/);
+    delete process.env.ROKU_APP_WAIT_MS;
   });
 });

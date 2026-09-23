@@ -23,10 +23,14 @@ const ROKU_PORT = 8060;
 const SCAN_CACHE_MS = 5 * 60_000;
 const PROBE_TIMEOUT_MS = 400;
 const CAST_LAUNCH_TIMEOUT_MS = 15_000;
-// Roku's own free Media Player channel: the one that will play a url handed
-// to it. It ships on most Rokus but not all — plenty of TVs arrive with only
-// the streaming services on them.
-const ROKU_MEDIA_PLAYER = '15985';
+// "Play on Roku", the hidden channel the Roku phone app pushes a url to. It
+// takes a url straight from a launch, but it is not in the channel store, so
+// a TV either has it or never will. The Roku Media Player channel that IS in
+// the store (id 2213) ignores a url handed to it this way.
+const ROKU_URL_PLAYER = '15985';
+// how long to give the Jellyfin app on a Roku to start up and check in. A
+// cold TV can take twenty seconds; ROKU_APP_WAIT_MS moves it for a slow set.
+const ROKU_APP_WAIT_DEFAULT_MS = 30_000;
 
 export type ScreenKind = 'session' | 'cast' | 'roku';
 
@@ -323,7 +327,7 @@ export class ScreensService {
 
     const url = this.jellyfin.streamUrl(item.id, this.serverAddress());
     if (screen.kind === 'roku') {
-      await this.playOnRoku(screen, url, item.name);
+      await this.playOnRoku(screen, item, url);
     } else {
       await this.playOnCast(screen, url, item.name, item.container);
     }
@@ -331,59 +335,100 @@ export class ScreensService {
   }
 
   // roku: wake it, then hand the file to the player its own remote app uses
-  private async playOnRoku(screen: Screen, url: string, title: string) {
+  private async playOnRoku(
+    screen: Screen,
+    item: { id: string; name: string },
+    url: string,
+  ) {
     const base = `http://${screen.address}:${ROKU_PORT}`;
-    const refused = () =>
-      new Error(
-        `${screen.name} is refusing commands. On that TV: Settings > System > ` +
-          'Advanced system settings > Control by mobile apps > Network access ' +
-          'needs to be Enabled (some remotes call it Default) — Limited is not ' +
-          'enough.',
-      );
     const post = async (path: string) => {
       const res = await fetch(base + path, {
         method: 'POST',
         signal: AbortSignal.timeout(6000),
       });
-      if (res.status === 403) throw refused();
+      if (res.status === 403) {
+        throw new Error(
+          `${screen.name} is refusing commands. On that TV: Settings > ` +
+            'System > Advanced system settings > Control by mobile apps > ' +
+            'Network access needs to be Enabled (older remotes say Default) — ' +
+            'Limited is not enough.',
+        );
+      }
       return res.ok;
     };
 
-    // a Roku without the Media Player channel has nothing to hand the film
-    // to, and the launch would fail with nothing useful to say
-    if (!(await this.rokuHasMediaPlayer(base))) {
-      throw new Error(
-        `${screen.name} needs Roku's free "Roku Media Player" channel before ` +
-          'it can play anything from here. Add it once from the Roku channel ' +
-          'store on that TV.',
-      );
+    const channels = await this.rokuChannels(base);
+    const jellyfin = channels.find((c) => /jellyfin/i.test(c.name));
+    await post('/keypress/PowerOn').catch(() => false);
+
+    // the Jellyfin app is the good way: once it is up it checks in as a
+    // session, and then it plays like any other Jellyfin app in the house —
+    // right file, right subtitles, and it remembers where you got to
+    if (jellyfin) {
+      await post(`/launch/${jellyfin.id}`);
+      const session = await this.waitForSession(screen);
+      if (!session) {
+        throw new Error(
+          `${screen.name} opened Jellyfin but it never checked in — it may ` +
+            'need signing in on that TV once.',
+        );
+      }
+      const ok = await this.jellyfin.playOnSession(session.id, item.id);
+      if (!ok) throw new Error(`${screen.name} did not take the request`);
+      return;
     }
 
-    await post('/keypress/PowerOn').catch(() => false);
-    await new Promise((r) => setTimeout(r, 2500));
-    const params = new URLSearchParams({
-      t: 'v',
-      u: url,
-      videoName: title,
-      videoFormat: 'mp4',
-    });
-    const ok = await post(`/launch/${ROKU_MEDIA_PLAYER}?${params.toString()}`);
-    if (!ok) throw new Error(`${screen.name} would not start the player`);
+    // failing that, a TV with the old push-a-url channel can still be used
+    if (channels.some((c) => c.id === ROKU_URL_PLAYER)) {
+      const params = new URLSearchParams({
+        t: 'v',
+        u: url,
+        videoName: item.name,
+        videoFormat: 'mp4',
+      });
+      const ok = await post(`/launch/${ROKU_URL_PLAYER}?${params.toString()}`);
+      if (!ok) throw new Error(`${screen.name} would not start the player`);
+      return;
+    }
+
+    throw new Error(
+      `${screen.name} needs the free Jellyfin channel before it can play ` +
+        'anything. Add it once from the Roku channel store on that TV.',
+    );
   }
 
-  /** Is the channel we hand films to actually on this Roku? A TV that will
-   * not tell us gets the benefit of the doubt — better to try and fail than
-   * to refuse something that would have worked. */
-  private async rokuHasMediaPlayer(base: string): Promise<boolean> {
+  /** Wait for a Jellyfin app on this TV to finish starting and check in. */
+  private async waitForSession(screen: Screen) {
+    const want = normalize(screen.deviceName ?? screen.name);
+    const limit =
+      Number(process.env.ROKU_APP_WAIT_MS) || ROKU_APP_WAIT_DEFAULT_MS;
+    const until = Date.now() + limit;
+    while (Date.now() < until) {
+      await new Promise((r) => setTimeout(r, Math.min(2000, limit / 4)));
+      const sessions = await this.jellyfin.sessions();
+      const match = sessions.find((s) => normalize(s.deviceName) === want);
+      if (match) return match;
+    }
+    return null;
+  }
+
+  /** What is installed on a Roku. An empty list means it would not say. */
+  private async rokuChannels(
+    base: string,
+  ): Promise<{ id: string; name: string }[]> {
     try {
       const res = await fetch(`${base}/query/apps`, {
         signal: AbortSignal.timeout(5000),
       });
-      if (!res.ok) return true;
+      if (!res.ok) return [];
       const body = await res.text();
-      return new RegExp(`id="${ROKU_MEDIA_PLAYER}"`).test(body);
+      const out: { id: string; name: string }[] = [];
+      const re = /<app id="([^"]+)"[^>]*>([^<]*)<\/app>/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(body))) out.push({ id: m[1], name: m[2] });
+      return out;
     } catch {
-      return true;
+      return [];
     }
   }
 
