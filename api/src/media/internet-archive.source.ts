@@ -150,15 +150,28 @@ export class InternetArchiveSource implements AcquisitionSource {
     file: IaFile;
     verdict: { why: string; detail: string };
   }> {
-    const found = await this.search(request.title);
+    const approvedIds = [...allowedIdentifiers()];
+    // an approval names an item. looking it up is how you find a named
+    // thing; searching is how you find an unnamed one. the Archive's search
+    // does not return the same rows twice running and does not expose every
+    // field for every item, so letting it decide whether an approval counts
+    // means an approval that sometimes does not
+    const found = approvedIds.length
+      ? await this.lookUp(approvedIds)
+      : await this.search(request.title);
     const candidates = narrow(found, {
       title: request.title,
       year: request.year ?? undefined,
     });
     if (!candidates.length) {
       throw new NotEligible(
-        "Couldn't add it — there's no free copy of that one.",
-        `no candidate matched "${request.title}" (${request.year ?? '—'})`,
+        approvedIds.length
+          ? "Couldn't add it — there's no approved copy of that one."
+          : "Couldn't add it — there's no free copy of that one.",
+        approvedIds.length
+          ? `none of the ${approvedIds.length} approved item(s) is ` +
+              `"${request.title}" (${request.year ?? '—'})`
+          : `no candidate matched "${request.title}" (${request.year ?? '—'})`,
       );
     }
 
@@ -212,13 +225,62 @@ export class InternetArchiveSource implements AcquisitionSource {
     return { item, file, verdict: rightsOf(item) };
   }
 
+  /** The approved items themselves, read one by one. Anything the Archive
+   * will not tell us about is left out rather than guessed at. */
+  private async lookUp(identifiers: string[]): Promise<IaCandidate[]> {
+    const out: IaCandidate[] = [];
+    for (const id of identifiers.slice(0, 50)) {
+      try {
+        const meta = await this.metadata(id);
+        if (!meta) continue;
+        out.push(meta);
+      } catch (e) {
+        this.log.warn(`${id} could not be read: ${(e as Error).message}`);
+      }
+    }
+    return out;
+  }
+
+  private async metadata(identifier: string): Promise<IaCandidate | null> {
+    const res = await fetch(`${IA}/metadata/${identifier}`, {
+      signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as {
+      metadata?: {
+        identifier?: string;
+        title?: string | string[];
+        year?: string;
+        date?: string;
+        licenseurl?: string;
+        rights?: string;
+      };
+    };
+    const m = body.metadata;
+    if (!m?.identifier) return null;
+    return {
+      identifier: String(m.identifier),
+      title: String(Array.isArray(m.title) ? m.title[0] : (m.title ?? '')),
+      year: this.yearOf({ year: m.year, date: m.date }),
+      licenseUrl: m.licenseurl ? String(m.licenseurl) : undefined,
+      rights: m.rights ? String(m.rights) : undefined,
+    };
+  }
+
   private async search(title: string): Promise<IaCandidate[]> {
     const url = new URL(`${IA}/advancedsearch.php`);
     url.searchParams.set(
       'q',
       `title:("${title.replace(/"/g, '')}") AND mediatype:(movies)`,
     );
-    for (const f of ['identifier', 'title', 'year', 'licenseurl', 'rights']) {
+    for (const f of [
+      'identifier',
+      'title',
+      'year',
+      'date',
+      'licenseurl',
+      'rights',
+    ]) {
       url.searchParams.append('fl[]', f);
     }
     url.searchParams.set('rows', '25');

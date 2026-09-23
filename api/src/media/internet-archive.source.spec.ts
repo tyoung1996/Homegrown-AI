@@ -72,10 +72,26 @@ function archive(opts: {
       } as any;
     }
     if (u.includes('/metadata/')) {
+      const id = decodeURIComponent(u.split('/metadata/')[1]);
+      const doc = (opts.docs ?? []).find((d) => d.identifier === id);
       return {
         ok: true,
         status: 200,
-        json: async () => ({ files: opts.files ?? [] }),
+        json: async () => ({
+          files: opts.files ?? [],
+          ...(doc
+            ? {
+                metadata: {
+                  identifier: doc.identifier,
+                  title: doc.title,
+                  year: doc.year,
+                  date: doc.date,
+                  licenseurl: doc.licenseurl,
+                  rights: doc.rights,
+                },
+              }
+            : {}),
+        }),
       } as any;
     }
     // the download itself
@@ -264,6 +280,68 @@ describe('deciding what to fetch', () => {
 
     expect(out.status).toBe(MediaStatus.ACQUIRING);
     expect(JSON.parse(String(out.ref)).id).toBe('the_one_i_checked');
+  });
+
+  it('finds an approved item the search does not return at all', async () => {
+    // the live failure: the item exists and is approved, but the search
+    // ranking did not surface it that minute
+    process.env.IA_ALLOWED_IDENTIFIERS = 'the_one_i_checked';
+    archive({
+      docs: [
+        {
+          identifier: 'the_one_i_checked',
+          title: 'Night of the Living Dead',
+          date: '1968-10-01',
+          licenseurl: PD,
+        },
+      ],
+      files: [{ name: 'f.mp4', size: '64' }],
+      searchStatus: 503, // search is no help; the lookup must not need it
+    });
+
+    const out = await new Source().start(request());
+
+    expect(out.status).toBe(MediaStatus.ACQUIRING);
+    expect(JSON.parse(String(out.ref)).id).toBe('the_one_i_checked');
+  });
+
+  it('reads the year from a date when no year is stated', async () => {
+    process.env.IA_ALLOWED_IDENTIFIERS = 'dated';
+    archive({
+      docs: [
+        {
+          identifier: 'dated',
+          title: 'Night of the Living Dead',
+          date: '1968-10-01',
+          licenseurl: PD,
+        },
+      ],
+      files: [{ name: 'f.mp4', size: '64' }],
+    });
+
+    expect((await new Source().start(request())).status).toBe(
+      MediaStatus.ACQUIRING,
+    );
+  });
+
+  it('will not use an approved item for a different film', async () => {
+    process.env.IA_ALLOWED_IDENTIFIERS = 'some_other_film';
+    archive({
+      docs: [
+        {
+          identifier: 'some_other_film',
+          title: 'Plan 9 from Outer Space',
+          year: '1957',
+          licenseurl: PD,
+        },
+      ],
+      files: [{ name: 'f.mp4', size: '64' }],
+    });
+
+    const out = await new Source().start(request());
+
+    expect(out.status).toBe(MediaStatus.UNAVAILABLE);
+    expect(out.ref).toBeUndefined();
   });
 
   it('still goes on licence alone when no allowlist is set', async () => {
