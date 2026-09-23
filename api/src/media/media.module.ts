@@ -3,6 +3,7 @@ import { PostersController } from './posters.controller';
 import { MediaController } from './media.controller';
 import { MediaService } from './media.service';
 import { CatalogService } from './catalog.service';
+import { AvailabilityService } from './availability.service';
 import { JellyfinService } from './jellyfin.service';
 import { ScreensService } from './screens.service';
 import { LibraryImportService } from './library-import.service';
@@ -15,6 +16,7 @@ import { PrismaService } from '../prisma.service';
     MediaService,
     CatalogService,
     JellyfinService,
+    AvailabilityService,
     ScreensService,
     LibraryImportService,
     AcquisitionRegistry,
@@ -22,6 +24,12 @@ import { PrismaService } from '../prisma.service';
     PrismaService,
   ],
   // the chat tools need the same service the http api uses
-  exports: [MediaService, CatalogService, JellyfinService, ScreensService],
+  exports: [
+    MediaService,
+    CatalogService,
+    JellyfinService,
+    AvailabilityService,
+    ScreensService,
+  ],
 })
 export class MediaModule {}

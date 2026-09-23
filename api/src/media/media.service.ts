@@ -11,16 +11,23 @@ import { CatalogService, CatalogItem } from './catalog.service';
 import { JellyfinService, PlayableItem } from './jellyfin.service';
 import { ScreensService, Screen } from './screens.service';
 import { AcquisitionRegistry } from './acquisition';
+import { AvailabilityService } from './availability.service';
+import {
+  CollectionAvailability,
+  MovieAvailability,
+  SeriesAvailability,
+} from './availability';
+import { parseEpisodeRef, titleOf } from './query';
 import { titlesMatch } from './filename';
 
 // what the family sees for each stage — no jargon anywhere in here
 const STATUS_TEXT: Record<MediaStatus, string> = {
   REQUESTED: 'On the list',
   SEARCHING: 'Looking for it',
-  ACQUIRING: 'Getting it',
-  IMPORTING: 'Adding to the library',
+  ACQUIRING: 'Adding it to the library',
+  IMPORTING: 'Almost ready',
   AVAILABLE: 'Ready to watch',
-  UNAVAILABLE: "Couldn't get it",
+  UNAVAILABLE: "Couldn't add it",
   CANCELLED: 'Cancelled',
 };
 
@@ -60,6 +67,32 @@ export type RequestOutcome =
   | { result: 'already-available'; label: string }
   | { result: 'already-requested'; label: string; request: MediaRequestView };
 
+/** What came back when someone said they wanted to watch something. */
+export type WatchLookup =
+  // on the shelf: these can be played right now
+  | { mode: 'owned'; query: string; items: PlayableItem[] }
+  // not on the shelf, but the catalogue knows it — offer to add
+  | { mode: 'missing'; query: string; films: MovieAvailability[] }
+  // a show, season by season
+  | { mode: 'series'; query: string; series: SeriesAvailability }
+  // one episode, asked for by name
+  | {
+      mode: 'episode';
+      query: string;
+      catalogId: number;
+      episode: {
+        seriesTitle: string;
+        seasonNumber: number;
+        episodeNumber: number;
+        name: string;
+        owned: boolean;
+        itemId?: string;
+        requested: boolean;
+      };
+    }
+  // nobody has heard of it
+  | { mode: 'nothing'; query: string };
+
 @Injectable()
 export class MediaService {
   private log = new Logger('Media');
@@ -70,25 +103,54 @@ export class MediaService {
     private jellyfin: JellyfinService,
     private sources: AcquisitionRegistry,
     private screens: ScreensService,
+    private availability: AvailabilityService,
   ) {}
 
+  /**
+   * For the admin panel: every part, separately, so a part that is down can
+   * be seen to be down. Each one is asked on its own and a failure is that
+   * part's failure — the app answering at all is itself the first line, and
+   * nothing here can take the rest of it with them.
+   */
   async health() {
-    const [catalog, jellyfin, source, screens] = await Promise.all([
-      this.catalog.health(),
-      this.jellyfin.health(),
-      this.sources.pick(),
+    const [catalog, jellyfin, source, screens, waiting] = await Promise.all([
+      this.catalog.health().catch((e: Error) => ({
+        configured: true,
+        ok: false,
+        detail: e.message,
+      })),
+      this.jellyfin.health().catch((e: Error) => ({
+        configured: true,
+        ok: false,
+        detail: e.message,
+      })),
+      this.sources.pick().catch(() => null),
       this.screens.list().catch((): Screen[] => []),
+      this.prisma.mediaRequest
+        .count({ where: { status: { in: OPEN_STATUSES } } })
+        .catch(() => 0),
     ]);
     return {
+      app: { ok: true },
       catalog,
       jellyfin,
-      source: source ? { name: source.name, label: source.label } : null,
+      // the family never sees this; the admin panel does
+      acquisition: source
+        ? { ok: true, name: source.name, label: source.label }
+        : {
+            ok: false,
+            name: null,
+            label: 'None configured',
+            detail: 'Nothing is set up to bring files in.',
+          },
       screens: screens.map((s) => ({
         name: s.name,
         kind: s.kind,
         ready: s.ready,
       })),
-      ready: catalog.ok,
+      openRequests: waiting,
+      // playing what we own works whether or not anything can fetch files
+      ready: jellyfin.ok,
     };
   }
 
@@ -106,6 +168,119 @@ export class MediaService {
   /** What we own that matches what they said. */
   watchable(query: string): Promise<PlayableItem[]> {
     return this.jellyfin.searchPlayable(query);
+  }
+
+  /**
+   * Someone said they want to watch something. The shelf is asked first and
+   * always: what comes back is either something that can be played now, or
+   * an honest "we do not have that" with the catalogue's version of it so it
+   * can be offered. Nothing here creates a request — being asked to watch
+   * something is not being asked to go and get it.
+   */
+  async lookFor(query: string): Promise<WatchLookup> {
+    const ref = parseEpisodeRef(query);
+    const title = ref ? ref.title : titleOf(query);
+
+    // "The Office S03E12" — one episode, and only that episode
+    if (ref?.episode != null) {
+      const shows = await this.catalog.searchSeries(title, 1).catch(() => []);
+      if (shows.length) {
+        const e = await this.availability.episode(
+          shows[0].catalogId,
+          ref.season,
+          ref.episode,
+        );
+        return {
+          mode: 'episode',
+          query,
+          catalogId: shows[0].catalogId,
+          episode: e,
+        };
+      }
+    }
+
+    // "The Office season 3" or "The Office" — the shape of the whole show
+    if (ref || (await this.looksLikeAShow(title))) {
+      const shows = await this.catalog.searchSeries(title, 1).catch(() => []);
+      if (shows.length) {
+        const series = await this.availability.series(shows[0].catalogId, {
+          season: ref?.season,
+        });
+        return { mode: 'series', query, series };
+      }
+    }
+
+    // a film: what is on the shelf, and if nothing, what the catalogue has
+    const owned = await this.jellyfin.searchPlayable(title);
+    if (owned.length) return { mode: 'owned', query, items: owned };
+
+    const found = await this.catalog.searchMovies(title, 5).catch(() => []);
+    if (!found.length) return { mode: 'nothing', query };
+    const films = await this.availability.movies(found);
+    return { mode: 'missing', query, films };
+  }
+
+  /** Is this a show rather than a film? Asked of the shelf first, so a show
+   * the house already has is recognised without a catalogue round trip. */
+  private async looksLikeAShow(title: string): Promise<boolean> {
+    const shelf = await this.jellyfin.items();
+    return shelf.some((i) => i.type === 'Series' && titlesMatch(i.name, title));
+  }
+
+  /** The other films that belong with one — the rest of the set. */
+  collection(catalogId: number): Promise<CollectionAvailability | null> {
+    return this.availability.collection(catalogId);
+  }
+
+  seriesAvailability(
+    catalogId: number,
+    opts: { deep?: boolean; season?: number } = {},
+  ): Promise<SeriesAvailability> {
+    return this.availability.series(catalogId, opts);
+  }
+
+  /** Exactly what a show is short of, ready to be offered. */
+  missingOf(catalogId: number) {
+    return this.availability.missing(catalogId);
+  }
+
+  /**
+   * Ask for only the parts of a show that are not already here. A season
+   * nobody has becomes one request, not twenty; anything already on the list
+   * is left alone.
+   */
+  async requestMissing(
+    userId: string,
+    catalogId: number,
+  ): Promise<RequestOutcome[]> {
+    const { seasons, episodes } = await this.availability.missing(catalogId);
+    const out: RequestOutcome[] = [];
+    const wanted = seasons
+      .filter((s) => !s.requested)
+      .map((s) => s.seasonNumber);
+    if (wanted.length) {
+      out.push(...(await this.requestSeries(userId, catalogId, wanted)));
+    }
+    const gaps = episodes
+      .filter((e) => !e.requested)
+      .map((e) => ({ season: e.seasonNumber, episode: e.episodeNumber }));
+    if (gaps.length) {
+      out.push(...(await this.requestEpisodes(userId, catalogId, gaps)));
+    }
+    return out;
+  }
+
+  /** The films in a set that are not here yet. */
+  async requestMissingFilms(
+    userId: string,
+    collectionOfCatalogId: number,
+  ): Promise<RequestOutcome[]> {
+    const set = await this.availability.collection(collectionOfCatalogId);
+    if (!set) return [];
+    const wanted = set.films
+      .filter((f) => !f.owned && !f.requested)
+      .map((f) => f.catalogId);
+    return wanted.length ? this.requestMovies(userId, wanted) : [];
   }
 
   /** The TVs something can go on right now. */
@@ -505,15 +680,86 @@ export class MediaService {
     );
   }
 
+  /**
+   * A file has been filed away where Jellyfin will find it. That is not the
+   * same as being able to watch it, so this goes no further than almost —
+   * only Jellyfin saying it can see the thing moves it to ready.
+   */
   async markImported(id: string, filePath: string) {
     await this.prisma.mediaRequest.update({
       where: { id },
       data: {
-        status: MediaStatus.AVAILABLE,
-        statusNote: 'In the library — ready to watch',
+        status: MediaStatus.IMPORTING,
+        statusNote: 'Almost ready',
         filePath,
       },
     });
+  }
+
+  /**
+   * Ask Jellyfin whether the things we are waiting on have actually turned
+   * up. This is the only thing in the app that marks something ready to
+   * watch: a file on disk, or any provider reporting itself finished, is not
+   * evidence that it can be played.
+   */
+  async confirmImported(): Promise<MediaRequestView[]> {
+    const waiting = await this.prisma.mediaRequest.findMany({
+      where: { status: MediaStatus.IMPORTING },
+      include: { user: { select: { displayName: true } } },
+    });
+    const ready: MediaRequestView[] = [];
+    for (const row of waiting) {
+      const seen = await this.seenByJellyfin(row);
+      if (!seen) continue;
+      const updated = await this.prisma.mediaRequest.update({
+        where: { id: row.id },
+        data: {
+          status: MediaStatus.AVAILABLE,
+          statusNote: 'In the library — ready to watch',
+          jellyfinId: seen,
+        },
+        include: { user: { select: { displayName: true } } },
+      });
+      this.log.log(`${row.label} is ready to watch`);
+      ready.push(this.view(updated, row.userId));
+    }
+    return ready;
+  }
+
+  /** The Jellyfin id of what this request asked for, or null while Jellyfin
+   * still cannot see it. */
+  private async seenByJellyfin(row: MediaRequest): Promise<string | null> {
+    if (row.kind === MediaKind.MOVIE) {
+      const found = await this.jellyfin.find(
+        'Movie',
+        row.catalogId,
+        row.title,
+        row.year ?? undefined,
+      );
+      return found?.id ?? null;
+    }
+    // a show: the episode, the season or the lot, depending on what was asked
+    const shelf = await this.jellyfin.ownedEpisodes(row.catalogId, row.title);
+    if (!shelf) return null;
+    if (row.kind === MediaKind.EPISODE) {
+      const hit = shelf.episodes.find(
+        (e) =>
+          e.seasonNumber === row.seasonNumber &&
+          e.episodeNumber === row.episodeNumber,
+      );
+      return hit?.id ?? null;
+    }
+    const series = await this.availability.series(row.catalogId, {
+      season:
+        row.kind === MediaKind.SEASON
+          ? (row.seasonNumber ?? undefined)
+          : undefined,
+    });
+    const complete =
+      row.kind === MediaKind.SEASON
+        ? series.seasons.every((x) => x.state === 'complete')
+        : series.state === 'complete';
+    return complete ? shelf.itemId : null;
   }
 
   view(

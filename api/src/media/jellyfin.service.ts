@@ -288,6 +288,18 @@ export class JellyfinService {
     return `${base}/Videos/${itemId}/stream?static=true&api_key=${KEY}`;
   }
 
+  /** Every episode of a series the house owns, by TMDB id. Returns null
+   * when Jellyfin has no such series at all — which is different from having
+   * the series with none of its episodes. */
+  async ownedEpisodes(
+    catalogId: number,
+    title: string,
+  ): Promise<{ itemId: string; episodes: LibraryEpisode[] } | null> {
+    const series = await this.find('Series', catalogId, title);
+    if (!series) return null;
+    return { itemId: series.id, episodes: await this.episodes(series.id) };
+  }
+
   /** The cover art for an item, fetched here so the key never leaves the
    * server and the browser never has to reach Jellyfin itself. */
   async image(

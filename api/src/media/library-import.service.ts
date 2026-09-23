@@ -98,6 +98,13 @@ export class LibraryImportService implements OnModuleInit, OnModuleDestroy {
       this.seen.delete(file);
     }
     if (imported.length) await this.jellyfin.refreshLibrary();
+    // whether or not anything moved this time round, ask Jellyfin about the
+    // ones already filed — a rescan from a previous pass may have landed
+    await this.media
+      .confirmImported()
+      .catch((e: unknown) =>
+        this.log.warn(`confirming failed: ${(e as Error).message}`),
+      );
     return { imported, waiting };
   }
 

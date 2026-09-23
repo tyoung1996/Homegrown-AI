@@ -6,8 +6,18 @@ import { MediaService } from './media.service';
 function build(opts: {
   shelf?: { type: 'Movie' | 'Series'; catalogId: number; id: string }[];
   shelfEpisodes?: { seasonNumber: number; episodeNumber: number }[];
+  /** what jellyfin's own search returns for a "watch this" query */
+  playable?: { id: string; name: string; year?: number; type?: string }[];
+  /** [seasonNumber, episodeCount] the catalogue lists for a show */
+  catalogSeasons?: [number, number][];
+  catalogMovies?: { catalogId: number; title: string; year?: number }[];
+  catalogShows?: { catalogId: number; title: string; year?: number }[];
   rows?: any[];
   sourceAvailable?: boolean;
+  /** what the acquisition source reports when handed a request */
+  sourceResult?: { status: MediaStatus; note: string };
+  /** the source blows up when asked to take something on */
+  sourceThrows?: boolean;
   screens?: { id: string; name: string; kind: string; ready: boolean }[];
 }) {
   const rows: any[] = opts.rows ? [...opts.rows] : [];
@@ -68,13 +78,34 @@ function build(opts: {
       year: 2005,
       kind: 'series',
     })),
-    seasons: jest.fn(async () => [
-      { seasonNumber: 1, name: 'Season 1', episodeCount: 6 },
-      { seasonNumber: 3, name: 'Season 3', episodeCount: 25 },
-    ]),
-    episodes: jest.fn(async () => []),
-    searchMovies: jest.fn(async () => []),
-    searchSeries: jest.fn(async () => []),
+    seasons: jest.fn(async () =>
+      (
+        opts.catalogSeasons ?? [
+          [1, 6],
+          [3, 25],
+        ]
+      ).map(([n, count]) => ({
+        seasonNumber: n,
+        name: `Season ${n}`,
+        episodeCount: count,
+      })),
+    ),
+    episodes: jest.fn(async (_id: number, season: number) => {
+      const found = (opts.catalogSeasons ?? []).find(([n]) => n === season);
+      const count = found ? found[1] : 0;
+      return Array.from({ length: count }, (_, i) => ({
+        seasonNumber: season,
+        episodeNumber: i + 1,
+        name: `Episode ${i + 1}`,
+      }));
+    }),
+    collectionOf: jest.fn(async () => null),
+    searchMovies: jest.fn(async () =>
+      (opts.catalogMovies ?? []).map((m) => ({ ...m, kind: 'movie' })),
+    ),
+    searchSeries: jest.fn(async () =>
+      (opts.catalogShows ?? []).map((m) => ({ ...m, kind: 'series' })),
+    ),
     health: jest.fn(async () => ({ configured: true, ok: true })),
   };
 
@@ -86,6 +117,28 @@ function build(opts: {
         ) ?? null,
     ),
     episodes: jest.fn(async () => opts.shelfEpisodes ?? []),
+    items: jest.fn(async () =>
+      (opts.shelf ?? []).map((s) => ({
+        id: s.id,
+        name: s.type === 'Series' ? 'The Office' : 'Interstellar',
+        type: s.type,
+        catalogId: s.catalogId,
+      })),
+    ),
+    searchPlayable: jest.fn(async () => opts.playable ?? []),
+    ownedEpisodes: jest.fn(async () => {
+      const series = (opts.shelf ?? []).find((s) => s.type === 'Series');
+      if (!series) return null;
+      return {
+        itemId: series.id,
+        episodes: (opts.shelfEpisodes ?? []).map((e) => ({
+          id: `jf-s${e.seasonNumber}e${e.episodeNumber}`,
+          seriesId: series.id,
+          ...e,
+          name: `Episode ${e.episodeNumber}`,
+        })),
+      };
+    }),
     health: jest.fn(async () => ({ configured: true, ok: true })),
   };
 
@@ -96,10 +149,15 @@ function build(opts: {
         : {
             name: 'drop-folder',
             label: 'Watched folder',
-            start: async () => ({
-              status: MediaStatus.REQUESTED,
-              note: 'On the list',
-            }),
+            start: async () => {
+              if (opts.sourceThrows) throw new Error('the provider is offline');
+              return (
+                opts.sourceResult ?? {
+                  status: MediaStatus.REQUESTED,
+                  note: 'On the list',
+                }
+              );
+            },
           },
     ),
   };
@@ -119,13 +177,26 @@ function build(opts: {
     stop: jest.fn(async (screen: any) => `Stopped ${screen.name}`),
   };
 
+  // the real engine over the same fakes, so the two agree by construction
+  const availability = new (
+    require('./availability.service') as typeof import('./availability.service')
+  ).AvailabilityService(prisma, catalog, jellyfin);
+
   return {
-    service: new MediaService(prisma, catalog, jellyfin, sources, screens),
+    service: new MediaService(
+      prisma,
+      catalog,
+      jellyfin,
+      sources,
+      screens,
+      availability,
+    ),
     prisma,
     rows,
     jellyfin,
     catalog,
     screens,
+    availability,
   };
 }
 
@@ -386,5 +457,328 @@ describe('MediaService permissions', () => {
     await expect(service.cancel('r1', 'owner', Role.ADULT)).rejects.toThrow(
       /already in the library/i,
     );
+  });
+});
+
+describe('someone says they want to watch something', () => {
+  it('offers what is on the shelf, and asks for nothing', async () => {
+    const { service, rows } = build({
+      playable: [{ id: 'jf-1', name: 'Interstellar', year: 2014 }],
+    });
+
+    const found = await service.lookFor('I want to watch Interstellar');
+
+    expect(found.mode).toBe('owned');
+    if (found.mode === 'owned')
+      expect(found.items[0].name).toBe('Interstellar');
+    // being asked to watch something is not being asked to go and get it
+    expect(rows).toHaveLength(0);
+  });
+
+  it('says plainly when we do not have it, and does not request it', async () => {
+    const { service, rows } = build({
+      playable: [],
+      catalogMovies: [{ catalogId: 157336, title: 'Interstellar', year: 2014 }],
+    });
+
+    const found = await service.lookFor('I want to watch Interstellar');
+
+    expect(found.mode).toBe('missing');
+    if (found.mode === 'missing') {
+      expect(found.films[0].title).toBe('Interstellar');
+      expect(found.films[0].owned).toBe(false);
+    }
+    expect(rows).toHaveLength(0);
+  });
+
+  it('says nobody has heard of it when the catalogue is blank too', async () => {
+    const { service } = build({ playable: [], catalogMovies: [] });
+
+    expect((await service.lookFor('watch Gibberish')).mode).toBe('nothing');
+  });
+
+  it('recognises a show we own and answers season by season', async () => {
+    const { service } = build({
+      shelf: [{ type: 'Series', catalogId: 2316, id: 'jf-office' }],
+      catalogShows: [{ catalogId: 2316, title: 'The Office' }],
+      catalogSeasons: [
+        [1, 2],
+        [2, 2],
+      ],
+      shelfEpisodes: [
+        { seasonNumber: 1, episodeNumber: 1 },
+        { seasonNumber: 1, episodeNumber: 2 },
+      ],
+    });
+
+    const found = await service.lookFor('I want to watch The Office');
+
+    expect(found.mode).toBe('series');
+    if (found.mode === 'series') {
+      expect(found.series.seasons.map((s) => s.state)).toEqual([
+        'complete',
+        'missing',
+      ]);
+      expect(found.series.missingCount).toBe(2);
+    }
+  });
+
+  it('answers about one episode when one episode was asked for', async () => {
+    const { service } = build({
+      shelf: [{ type: 'Series', catalogId: 2316, id: 'jf-office' }],
+      catalogShows: [{ catalogId: 2316, title: 'The Office' }],
+      catalogSeasons: [[3, 12]],
+      shelfEpisodes: [{ seasonNumber: 3, episodeNumber: 12 }],
+    });
+
+    const found = await service.lookFor('Play The Office S03E12');
+
+    expect(found.mode).toBe('episode');
+    if (found.mode === 'episode') {
+      expect(found.episode.owned).toBe(true);
+      expect(found.episode.seasonNumber).toBe(3);
+      expect(found.episode.episodeNumber).toBe(12);
+    }
+  });
+
+  it('does not offer the whole show when one episode is missing', async () => {
+    const { service, rows } = build({
+      shelf: [{ type: 'Series', catalogId: 2316, id: 'jf-office' }],
+      catalogShows: [{ catalogId: 2316, title: 'The Office' }],
+      catalogSeasons: [[3, 12]],
+      shelfEpisodes: [{ seasonNumber: 3, episodeNumber: 1 }],
+    });
+
+    const found = await service.lookFor('Play The Office S03E12');
+
+    expect(found.mode).toBe('episode');
+    if (found.mode === 'episode') expect(found.episode.owned).toBe(false);
+    expect(rows).toHaveLength(0);
+  });
+});
+
+describe('asking for only what is missing', () => {
+  it('asks for a whole absent season as one request, and gaps one by one', async () => {
+    const { service } = build({
+      shelf: [{ type: 'Series', catalogId: 2316, id: 'jf-office' }],
+      catalogSeasons: [
+        [1, 2],
+        [2, 3],
+        [3, 2],
+      ],
+      shelfEpisodes: [
+        { seasonNumber: 1, episodeNumber: 1 },
+        { seasonNumber: 1, episodeNumber: 2 },
+        { seasonNumber: 2, episodeNumber: 1 },
+      ],
+    });
+
+    const out = await service.requestMissing('u1', 2316);
+    const labels = out.map((o) => o.label);
+
+    expect(labels).toContain('The Office — Season 3');
+    expect(labels).toContain('The Office — S2E2');
+    expect(labels).toContain('The Office — S2E3');
+    // season 1 is complete and season 3 went as a season, not as episodes
+    expect(labels).not.toContain('The Office — S3E1');
+    expect(labels).not.toContain('The Office — S1E1');
+  });
+
+  it('asks for nothing when the show is already complete', async () => {
+    const { service } = build({
+      shelf: [{ type: 'Series', catalogId: 2316, id: 'jf-office' }],
+      catalogSeasons: [[1, 2]],
+      shelfEpisodes: [
+        { seasonNumber: 1, episodeNumber: 1 },
+        { seasonNumber: 1, episodeNumber: 2 },
+      ],
+    });
+
+    expect(await service.requestMissing('u1', 2316)).toHaveLength(0);
+  });
+
+  it('does not ask twice for something already on the list', async () => {
+    const { service } = build({
+      shelf: [{ type: 'Series', catalogId: 2316, id: 'jf-office' }],
+      catalogSeasons: [[2, 3]],
+      shelfEpisodes: [{ seasonNumber: 2, episodeNumber: 1 }],
+      rows: [
+        {
+          id: 'existing',
+          kind: MediaKind.EPISODE,
+          catalogId: 2316,
+          seasonNumber: 2,
+          episodeNumber: 2,
+          status: MediaStatus.REQUESTED,
+          label: 'The Office — S2E2',
+          title: 'The Office',
+        },
+      ],
+    });
+
+    const out = await service.requestMissing('u1', 2316);
+
+    expect(out.map((o) => o.label)).toEqual(['The Office — S2E3']);
+  });
+});
+
+describe('nothing is ready to watch until Jellyfin says so', () => {
+  it('leaves a filed file short of ready, however finished it looks', async () => {
+    const { service, rows } = build({
+      rows: [
+        {
+          id: 'r1',
+          kind: MediaKind.MOVIE,
+          catalogId: 157336,
+          title: 'Interstellar',
+          label: 'Interstellar (2014)',
+          year: 2014,
+          status: MediaStatus.REQUESTED,
+        },
+      ],
+    });
+
+    await service.markImported('r1', '/srv/media/Movies/Interstellar.mkv');
+
+    // the file is on disk and the provider is done — still not watchable
+    expect(rows[0].status).toBe(MediaStatus.IMPORTING);
+    expect(rows[0].status).not.toBe(MediaStatus.AVAILABLE);
+  });
+
+  it('will not call it ready while Jellyfin cannot see it', async () => {
+    const { service, rows } = build({
+      shelf: [],
+      rows: [
+        {
+          id: 'r1',
+          kind: MediaKind.MOVIE,
+          catalogId: 157336,
+          title: 'Interstellar',
+          label: 'Interstellar (2014)',
+          year: 2014,
+          status: MediaStatus.IMPORTING,
+        },
+      ],
+    });
+
+    expect(await service.confirmImported()).toHaveLength(0);
+    expect(rows[0].status).toBe(MediaStatus.IMPORTING);
+  });
+
+  it('calls it ready the moment Jellyfin can see it', async () => {
+    const { service, rows } = build({
+      shelf: [{ type: 'Movie', catalogId: 157336, id: 'jf-42' }],
+      rows: [
+        {
+          id: 'r1',
+          kind: MediaKind.MOVIE,
+          catalogId: 157336,
+          title: 'Interstellar',
+          label: 'Interstellar (2014)',
+          year: 2014,
+          status: MediaStatus.IMPORTING,
+        },
+      ],
+    });
+
+    const ready = await service.confirmImported();
+
+    expect(ready).toHaveLength(1);
+    expect(rows[0].status).toBe(MediaStatus.AVAILABLE);
+    expect(rows[0].jellyfinId).toBe('jf-42');
+  });
+
+  it('will not call an episode ready until that episode is on the shelf', async () => {
+    const { service, rows } = build({
+      shelf: [{ type: 'Series', catalogId: 2316, id: 'jf-office' }],
+      shelfEpisodes: [{ seasonNumber: 3, episodeNumber: 1 }],
+      rows: [
+        {
+          id: 'r1',
+          kind: MediaKind.EPISODE,
+          catalogId: 2316,
+          seasonNumber: 3,
+          episodeNumber: 12,
+          title: 'The Office',
+          label: 'The Office — S3E12',
+          status: MediaStatus.IMPORTING,
+        },
+      ],
+    });
+
+    // the series is there and so are other episodes — not this one
+    expect(await service.confirmImported()).toHaveLength(0);
+    expect(rows[0].status).toBe(MediaStatus.IMPORTING);
+  });
+});
+
+describe('when the way files arrive is having a bad day', () => {
+  it('keeps the request when the provider refuses to take it', async () => {
+    const { service, rows } = build({ sourceThrows: true });
+
+    await expect(service.requestMovies('u1', [157336])).rejects.toThrow();
+
+    // the ask is not lost just because the provider fell over
+    expect(rows).toHaveLength(1);
+    expect(rows[0].label).toBe('Interstellar (2014)');
+  });
+
+  it('still takes the request when there is no provider at all', async () => {
+    const { service } = build({ sourceAvailable: false });
+
+    const [outcome] = await service.requestMovies('u1', [157336]);
+
+    expect(outcome.result).toBe('queued');
+    if (outcome.result === 'queued') {
+      expect(outcome.request.status).toBe(MediaStatus.UNAVAILABLE);
+      expect(outcome.request.statusText).toBe("Couldn't add it");
+    }
+  });
+
+  it('keeps answering about the library when no provider is configured', async () => {
+    const { service } = build({
+      sourceAvailable: false,
+      playable: [{ id: 'jf-1', name: 'Interstellar', year: 2014 }],
+      screens: [
+        { id: 'cast:1', name: 'Living room', kind: 'cast', ready: true },
+      ],
+    });
+
+    // watching what we already own does not go anywhere near a provider
+    const found = await service.lookFor('watch Interstellar');
+    expect(found.mode).toBe('owned');
+    expect(await service.listScreens()).toHaveLength(1);
+  });
+
+  it('reports what a provider said without repeating it to the family', async () => {
+    const { service } = build({
+      sourceResult: {
+        status: MediaStatus.ACQUIRING,
+        note: 'Adding it to the library',
+      },
+    });
+
+    const [outcome] = await service.requestMovies('u1', [157336]);
+
+    if (outcome.result === 'queued') {
+      expect(outcome.request.statusText).toBe('Adding it to the library');
+      // no provider names anywhere near what the family reads
+      expect(JSON.stringify(outcome.request)).not.toMatch(
+        /radarr|sonarr|provider|indexer|download/i,
+      );
+    }
+  });
+});
+
+describe('two people asking for the same thing', () => {
+  it('puts it on the list once', async () => {
+    const { service, rows } = build({});
+
+    const first = await service.requestMovies('u1', [157336]);
+    const second = await service.requestMovies('u2', [157336]);
+
+    expect(first[0].result).toBe('queued');
+    expect(second[0].result).toBe('already-requested');
+    expect(rows).toHaveLength(1);
   });
 });

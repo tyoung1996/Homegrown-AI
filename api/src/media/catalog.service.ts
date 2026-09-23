@@ -26,6 +26,13 @@ export interface CatalogSeason {
   posterUrl?: string;
 }
 
+export interface CatalogCollection {
+  collectionId: number;
+  title: string;
+  posterUrl?: string;
+  films: CatalogItem[];
+}
+
 export interface CatalogEpisode {
   seasonNumber: number;
   episodeNumber: number;
@@ -42,6 +49,7 @@ interface TmdbMovie {
   release_date?: string;
   overview?: string;
   poster_path?: string | null;
+  belongs_to_collection?: { id: number; name?: string } | null;
 }
 
 interface TmdbSeries {
@@ -172,6 +180,43 @@ export class CatalogService {
       overview: r.overview ? String(r.overview) : undefined,
       posterUrl: r.poster_path ? IMAGES + String(r.poster_path) : undefined,
       kind: 'series',
+    };
+  }
+
+  /** The set a film belongs to, if it belongs to one: ask for one Harry
+   * Potter and the answer is really about eight films. Null for a film that
+   * stands alone, which is most of them. */
+  async collectionOf(catalogId: number): Promise<CatalogCollection | null> {
+    const film = await this.get<TmdbMovie>(`/movie/${catalogId}`);
+    const belongs = film.belongs_to_collection;
+    if (!belongs?.id) return null;
+    return this.collection(Number(belongs.id));
+  }
+
+  async collection(collectionId: number): Promise<CatalogCollection> {
+    const r = await this.get<{
+      id: number;
+      name?: string;
+      poster_path?: string | null;
+      parts?: TmdbMovie[];
+    }>(`/collection/${collectionId}`);
+    return {
+      collectionId: Number(r.id),
+      title: String(r.name ?? 'Collection'),
+      posterUrl: r.poster_path ? IMAGES + String(r.poster_path) : undefined,
+      films: (r.parts ?? [])
+        // an announced film with no release date yet is not something anyone
+        // can be missing
+        .filter((p) => yearOf(p.release_date))
+        .map((p) => ({
+          catalogId: Number(p.id),
+          title: String(p.title ?? p.original_title ?? 'Untitled'),
+          year: yearOf(p.release_date),
+          overview: p.overview ? String(p.overview) : undefined,
+          posterUrl: p.poster_path ? IMAGES + String(p.poster_path) : undefined,
+          kind: 'movie' as const,
+        }))
+        .sort((a, b) => (a.year ?? 9999) - (b.year ?? 9999)),
     };
   }
 

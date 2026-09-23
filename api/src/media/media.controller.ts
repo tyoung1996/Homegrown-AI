@@ -15,6 +15,7 @@ import {
 import { Role } from '@prisma/client';
 import {
   IsArray,
+  IsBoolean,
   IsInt,
   IsOptional,
   Min,
@@ -44,6 +45,10 @@ class RequestDto {
   @ValidateNested({ each: true })
   @Type(() => EpisodeRefDto)
   episodes?: EpisodeRefDto[];
+  /** "get the rest of it" — work out the gaps and ask for only those */
+  @IsOptional() @IsBoolean() missingOnly?: boolean;
+  /** the films of a set this one belongs to that are not here yet */
+  @IsOptional() @IsBoolean() missingFilmsOfCollection?: boolean;
 }
 
 @UseGuards(JwtAuthGuard)
@@ -92,6 +97,18 @@ export class MediaController {
     return this.media.watchable(query);
   }
 
+  /** What the house owns of one show, season by season. */
+  @Get('series/:id/availability')
+  availability(@Param('id', ParseIntPipe) id: number) {
+    return this.media.seriesAvailability(id, { deep: true });
+  }
+
+  /** The other films in this one's set, marked owned or missing. */
+  @Get('movies/:id/collection')
+  collection(@Param('id', ParseIntPipe) id: number) {
+    return this.media.collection(id);
+  }
+
   @Get('screens')
   screens(@Query('refresh') refresh?: string) {
     return this.media.listScreens(refresh === 'true');
@@ -130,10 +147,16 @@ export class MediaController {
   async add(@Req() req: AuthedRequest, @Body() dto: RequestDto) {
     const userId = req.user.userId;
     const out: RequestOutcome[] = [];
-    if (dto.movies?.length) {
+    if (dto.movies?.length && dto.missingFilmsOfCollection) {
+      for (const id of dto.movies) {
+        out.push(...(await this.media.requestMissingFilms(userId, id)));
+      }
+    } else if (dto.movies?.length) {
       out.push(...(await this.media.requestMovies(userId, dto.movies)));
     }
-    if (dto.seriesId && dto.episodes?.length) {
+    if (dto.seriesId && dto.missingOnly) {
+      out.push(...(await this.media.requestMissing(userId, dto.seriesId)));
+    } else if (dto.seriesId && dto.episodes?.length) {
       out.push(
         ...(await this.media.requestEpisodes(
           userId,

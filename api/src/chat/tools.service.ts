@@ -265,13 +265,20 @@ export const TOOL_DEFS = [
     function: {
       name: 'find_something_to_watch',
       description:
-        'Use this the moment someone wants to WATCH something now — "I want to watch Harry Potter", "put on Encanto", "can we watch a movie". It looks through what the family already owns and shows them the matches to tap, then they pick a TV. Do NOT use search_movies for this; that one is for adding things they do not have.',
+        'THE LIBRARY — what this family actually owns and can play tonight. ' +
+        'Use this the moment someone wants to watch something: "I want to ' +
+        'watch Harry Potter", "put on Encanto", "play The Office S03E12". It ' +
+        'looks on the shelf first and tells you whether it is there. If it is ' +
+        'not, it comes back with what the film or show actually is, so you ' +
+        'can offer to add it — but do NOT add anything unless they say yes.',
       parameters: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'The title they said, e.g. "harry potter"',
+            description:
+              'What they said, including any season and episode: "harry ' +
+              'potter", "the office s3e12", "the office season 3"',
           },
         },
         required: ['query'],
@@ -281,9 +288,100 @@ export const TOOL_DEFS = [
   {
     type: 'function',
     function: {
+      name: 'search_catalog',
+      description:
+        'THE CATALOGUE — every film and show that exists in the world, ' +
+        'whether or not this family owns it. Use it only when they are ' +
+        'explicitly asking to ADD something ("add Dune to the server"), or ' +
+        'to identify a title. A result here does NOT mean it can be played: ' +
+        'only find_something_to_watch can tell you that.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' },
+          kind: {
+            type: 'string',
+            enum: ['movie', 'series'],
+            description: 'film or tv show; guess from what they said',
+          },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_show_availability',
+      description:
+        'For one show: which seasons the family has in full, which are part ' +
+        'there, and which are missing entirely. Use before offering to add ' +
+        'any of a show, and when they ask what is missing from one.',
+      parameters: {
+        type: 'object',
+        properties: {
+          seriesId: {
+            type: 'number',
+            description:
+              'catalogue id from find_something_to_watch or search_catalog',
+          },
+        },
+        required: ['seriesId'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'add_to_library',
+      description:
+        'Put something on the family library list. Only ever after they have ' +
+        'asked for it or said yes to an offer — never turn "I want to watch ' +
+        'X" straight into this. Give ONE of: movieIds, or seriesId with ' +
+        'seasons, or seriesId with episodes, or seriesId with missingOnly ' +
+        'true for "get the rest of it".',
+      parameters: {
+        type: 'object',
+        properties: {
+          movieIds: {
+            type: 'array',
+            items: { type: 'number' },
+            description: 'catalogue ids of films',
+          },
+          seriesId: { type: 'number' },
+          seasons: {
+            type: 'array',
+            items: { type: 'number' },
+            description: 'season numbers; leave out for the whole show',
+          },
+          episodes: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                season: { type: 'number' },
+                episode: { type: 'number' },
+              },
+              required: ['season', 'episode'],
+            },
+          },
+          missingOnly: {
+            type: 'boolean',
+            description:
+              'true for "get whatever we are missing" — works out the gaps ' +
+              'and asks only for those',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'list_tvs',
       description:
-        'List the TVs in the house that something can be played on right now. Use when someone asks what TVs there are, or before playing if they have not said which one.',
+        'The TVs in the house something can be played on right now. Use when ' +
+        'they ask what TVs there are, or before playing if they have not said.',
       parameters: { type: 'object', properties: {} },
     },
   },
@@ -292,14 +390,12 @@ export const TOOL_DEFS = [
     function: {
       name: 'play_on_tv',
       description:
-        'Start something playing on a TV. Only use ids that came back from find_something_to_watch in this conversation, and a TV name from list_tvs.',
+        'Start something playing on a TV. Only ids that came back from ' +
+        'find_something_to_watch, and a TV name from list_tvs.',
       parameters: {
         type: 'object',
         properties: {
-          itemId: {
-            type: 'string',
-            description: 'id from find_something_to_watch',
-          },
+          itemId: { type: 'string' },
           tv: {
             type: 'string',
             description: 'the TV name, e.g. "living room"',
@@ -324,152 +420,14 @@ export const TOOL_DEFS = [
   {
     type: 'function',
     function: {
-      name: 'search_movies',
-      description:
-        'Look up films by name when someone wants one added to the family library ("add Harry Potter", "can we get Interstellar"). Shows the family a list to pick from, so call this FIRST and let them choose — do not guess which one they meant.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: {
-            type: 'string',
-            description: 'The title they said, e.g. "harry potter"',
-          },
-        },
-        required: ['query'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'request_movies',
-      description:
-        'Add specific films to the library list. Only use ids that came back from search_movies in this conversation — for example when they follow up with "just the first three" or "all of them".',
-      parameters: {
-        type: 'object',
-        properties: {
-          movieIds: {
-            type: 'array',
-            items: { type: 'number' },
-            description: 'catalogId values from search_movies',
-          },
-        },
-        required: ['movieIds'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'search_series',
-      description:
-        'Look up TV shows by name when someone wants one added ("add The Office", "get Fallout"). Shows the family the matches to choose from.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'The show name they said' },
-        },
-        required: ['query'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'get_series_seasons',
-      description:
-        'List the seasons of a show, with how many of its episodes are already in the library. Use after search_series when they mention seasons.',
-      parameters: {
-        type: 'object',
-        properties: {
-          seriesId: {
-            type: 'number',
-            description: 'catalogId from search_series',
-          },
-        },
-        required: ['seriesId'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'get_season_episodes',
-      description:
-        'List the episodes in one season of a show, with what is already in the library.',
-      parameters: {
-        type: 'object',
-        properties: {
-          seriesId: { type: 'number' },
-          seasonNumber: { type: 'number' },
-        },
-        required: ['seriesId', 'seasonNumber'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'request_series',
-      description:
-        'Add a show to the library list. Leave seasons empty for the whole show, or pass the season numbers they asked for ("seasons two and three").',
-      parameters: {
-        type: 'object',
-        properties: {
-          seriesId: {
-            type: 'number',
-            description: 'catalogId from search_series',
-          },
-          seasons: {
-            type: 'array',
-            items: { type: 'number' },
-            description:
-              'Season numbers; omit or leave empty for the whole show',
-          },
-        },
-        required: ['seriesId'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'request_episodes',
-      description:
-        'Add individual episodes of a show to the library list, e.g. "season 3 episode 7".',
-      parameters: {
-        type: 'object',
-        properties: {
-          seriesId: { type: 'number' },
-          episodes: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                season: { type: 'number' },
-                episode: { type: 'number' },
-              },
-              required: ['season', 'episode'],
-            },
-          },
-        },
-        required: ['seriesId', 'episodes'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
       name: 'get_media_request_status',
       description:
-        'Check what is on the family library list and how far along each thing is ("is Harry Potter ready yet", "what did we ask for").',
+        'How things on the library list are getting on. Use for "is Dune ' +
+        'here yet", "what are we waiting on".',
       parameters: {
         type: 'object',
         properties: {
-          query: {
-            type: 'string',
-            description: 'Optional title to filter by; omit for everything',
-          },
+          query: { type: 'string', description: 'optional title to narrow to' },
         },
       },
     },

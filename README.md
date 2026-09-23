@@ -73,6 +73,17 @@ Jellyfin expects, marks the request ready to watch, and tells Jellyfin to
 rescan. Another source — a TV tuner recording off an antenna, a disc ripper —
 implements the same small interface and registers itself; nothing else changes.
 
+**Asking for something you don't have.** Ask to watch something that isn't
+on the shelf and it says so, and offers to put it on the list — it never
+turns "I want to watch X" into a request on its own. Shows are understood
+season by season: it can tell you that you have series one and two, that
+three is two episodes short and four is missing, and ask for only the gaps.
+Ask for one episode and you get one episode, not the whole run.
+
+Something is only ever called **ready to watch** when Jellyfin can actually
+see and play it. A file arriving on disk, or anything that fetches it saying
+it has finished, gets a request as far as *almost ready* and no further.
+
 **Putting it on the TV.** Say "I want to watch Harry Potter" and it looks
 through what you already own, asks which one you meant and which TV, and
 starts it. Nothing to configure: the app looks around your own network for

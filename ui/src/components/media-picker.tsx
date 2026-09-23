@@ -32,6 +32,45 @@ export type ScreenRow = {
   nowPlaying?: string;
 };
 
+export type AddItem = {
+  catalogId: number;
+  title: string;
+  year?: number;
+  posterUrl?: string;
+  owned: boolean;
+  requested: boolean;
+};
+
+export type SeasonRow = {
+  seasonNumber: number;
+  name: string;
+  episodeCount: number;
+  ownedCount: number;
+  state: 'complete' | 'partial' | 'missing';
+  requested: boolean;
+  episodes?: EpisodeRow[];
+};
+
+export type EpisodeRow = {
+  seasonNumber: number;
+  episodeNumber: number;
+  name: string;
+  owned: boolean;
+  itemId?: string;
+  requested: boolean;
+};
+
+export type ShowRow = {
+  catalogId: number;
+  title: string;
+  year?: number;
+  posterUrl?: string;
+  itemId?: string;
+  state: 'complete' | 'partial' | 'missing';
+  missingCount: number;
+  seasons: SeasonRow[];
+};
+
 export type Picker =
   | {
       mode: 'movies' | 'series';
@@ -42,6 +81,16 @@ export type Picker =
       mode: 'play';
       query: string;
       items: WatchItem[];
+      screens: ScreenRow[];
+    }
+  | { mode: 'add'; query: string; items: AddItem[] }
+  | { mode: 'show'; query: string; series: ShowRow; screens: ScreenRow[] }
+  | {
+      mode: 'episode';
+      query: string;
+      catalogId: number;
+      seriesTitle: string;
+      episode: EpisodeRow;
       screens: ScreenRow[];
     };
 
@@ -74,6 +123,11 @@ type Episode = {
   overview?: string;
   inLibrary: boolean;
 };
+
+// what to show someone when a call fails, whatever was thrown
+function failure(e: unknown): string {
+  return e instanceof Error ? e.message : 'Something went wrong';
+}
 
 async function api(
   path: string,
@@ -161,6 +215,15 @@ export function MediaPicker({
   if (picker.mode === 'play') {
     return <WatchPicker picker={picker} token={token} />;
   }
+  if (picker.mode === 'add') {
+    return <AddPicker picker={picker} token={token} onAdded={onAdded} />;
+  }
+  if (picker.mode === 'show') {
+    return <ShowPicker picker={picker} token={token} onAdded={onAdded} />;
+  }
+  if (picker.mode === 'episode') {
+    return <EpisodePicker picker={picker} token={token} onAdded={onAdded} />;
+  }
   return <RequestPicker picker={picker} token={token} onAdded={onAdded} />;
 }
 
@@ -199,8 +262,8 @@ function RequestPicker({
           token,
         );
         setSeasons(data.seasons);
-      } catch (e: any) {
-        setError(e.message);
+      } catch (e) {
+        setError(failure(e));
       }
     },
     [token],
@@ -220,8 +283,8 @@ function RequestPicker({
         token,
       );
       setEpisodes((e) => ({ ...e, [n]: data.episodes }));
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(failure(e));
     }
   }
 
@@ -257,8 +320,8 @@ function RequestPicker({
       );
       setDone(r.results as Outcome[]);
       onAdded?.();
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(failure(e));
     } finally {
       setBusy(false);
     }
@@ -630,9 +693,7 @@ function WatchPicker({
     picker.items.length === 1 ? picker.items[0] : null,
   );
   const [screens, setScreens] = useState<ScreenRow[]>(picker.screens);
-  const [busy, setBusy] = useState<string | null>(null);
   const [playing, setPlaying] = useState<string | null>(null);
-  const [error, setError] = useState('');
 
   // someone else may have turned a TV on (or started something) since the
   // assistant answered
@@ -647,27 +708,6 @@ function WatchPicker({
       live = false;
     };
   }, [token]);
-
-  async function play(screen: ScreenRow) {
-    if (!item) return;
-    setBusy(screen.id);
-    setError('');
-    try {
-      const res = await api(
-        '/media/play',
-        {
-          method: 'POST',
-          body: JSON.stringify({ itemId: item.itemId, screen: screen.id }),
-        },
-        token,
-      );
-      setPlaying(res.message ?? `Playing on ${screen.name}`);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setBusy(null);
-    }
-  }
 
   if (playing) {
     return (
@@ -731,12 +771,59 @@ function WatchPicker({
         )}
       </div>
 
-      {screens.length === 0 && (
-        <p className="py-2 text-sm text-muted">
-          No TVs are awake right now. Turn one on and ask again.
-        </p>
-      )}
+      <ScreenList
+        screens={screens}
+        itemId={item.itemId}
+        token={token}
+        onPlaying={setPlaying}
+      />
+    </div>
+  );
+}
 
+// shared by the cards that can both play something and ask for what is
+// missing: the film is chosen, now pick a room
+function ScreenList({
+  screens,
+  itemId,
+  token,
+  onPlaying,
+}: {
+  screens: ScreenRow[];
+  itemId: string;
+  token: string;
+  onPlaying: (line: string) => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState('');
+
+  async function play(screen: ScreenRow) {
+    setBusy(screen.id);
+    setError('');
+    try {
+      const res = await api(
+        '/media/play',
+        { method: 'POST', body: JSON.stringify({ itemId, screen: screen.id }) },
+        token,
+      );
+      onPlaying(res.message ?? `Playing on ${screen.name}`);
+    } catch (e) {
+      setError(failure(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (!screens.length) {
+    return (
+      <p className="py-2 text-sm text-muted">
+        No TVs are awake right now. Turn one on and ask again.
+      </p>
+    );
+  }
+
+  return (
+    <>
       <ul className="space-y-1">
         {screens.map((s) => (
           <li key={s.id}>
@@ -760,7 +847,347 @@ function WatchPicker({
           </li>
         ))}
       </ul>
+      {error && <p className="mt-2 text-sm text-red">{error}</p>}
+    </>
+  );
+}
 
+/** We don't have it. Say so plainly, and offer to put it on the list —
+ * nothing is asked for until they tap. */
+function AddPicker({
+  picker,
+  token,
+  onAdded,
+}: {
+  picker: Extract<Picker, { mode: 'add' }>;
+  token: string;
+  onAdded?: () => void;
+}) {
+  const [busy, setBusy] = useState<number | null>(null);
+  const [added, setAdded] = useState<Set<number>>(new Set());
+  const [error, setError] = useState('');
+
+  async function add(item: AddItem) {
+    setBusy(item.catalogId);
+    setError('');
+    try {
+      await api(
+        '/media/requests',
+        { method: 'POST', body: JSON.stringify({ movies: [item.catalogId] }) },
+        token,
+      );
+      setAdded((s) => new Set(s).add(item.catalogId));
+      onAdded?.();
+    } catch (e) {
+      setError(failure(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="card mt-2 p-3">
+      <p className="eyebrow mb-2">Not in your library</p>
+      <ul className="space-y-1">
+        {picker.items.map((i) => {
+          const done = added.has(i.catalogId) || i.requested;
+          return (
+            <li
+              key={i.catalogId}
+              className="flex items-center gap-3 rounded-md bg-paper px-3 py-2"
+            >
+              <Poster url={i.posterUrl} title={i.title} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium">
+                  {i.title}
+                </span>
+                <span className="block text-xs text-muted">{i.year}</span>
+              </span>
+              {done ? (
+                <span className="chip shrink-0 !py-0.5 text-[11px] border-gold/60 text-gold">
+                  On the list
+                </span>
+              ) : (
+                <button
+                  disabled={busy === i.catalogId}
+                  onClick={() => add(i)}
+                  className="btn shrink-0 text-xs disabled:opacity-50"
+                >
+                  {busy === i.catalogId ? 'adding…' : 'Add to library'}
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {error && <p className="mt-2 text-sm text-red">{error}</p>}
+    </div>
+  );
+}
+
+const SEASON_MARK: Record<string, string> = {
+  complete: '✓',
+  partial: '·',
+  missing: '✗',
+};
+
+/** A show, season by season: watch what is here, ask for what is not. */
+function ShowPicker({
+  picker,
+  token,
+  onAdded,
+}: {
+  picker: Extract<Picker, { mode: 'show' }>;
+  token: string;
+  onAdded?: () => void;
+}) {
+  const show = picker.series;
+  const [playing, setPlaying] = useState<string | null>(null);
+  const [chosen, setChosen] = useState<EpisodeRow | null>(null);
+  const [open, setOpen] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [asked, setAsked] = useState(false);
+  const [error, setError] = useState('');
+
+  async function addMissing() {
+    setBusy(true);
+    setError('');
+    try {
+      await api(
+        '/media/requests',
+        {
+          method: 'POST',
+          body: JSON.stringify({ seriesId: show.catalogId, missingOnly: true }),
+        },
+        token,
+      );
+      setAsked(true);
+      onAdded?.();
+    } catch (e) {
+      setError(failure(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (playing) {
+    return (
+      <div className="card mt-2 p-3">
+        <p className="eyebrow mb-1">On the TV</p>
+        <p className="text-sm">{playing}</p>
+      </div>
+    );
+  }
+
+  if (chosen?.itemId) {
+    return (
+      <div className="card mt-2 p-3">
+        <div className="mb-3 flex items-center gap-3">
+          <Poster url={show.posterUrl} title={show.title} />
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-medium">
+              {show.title} — S{chosen.seasonNumber}E{chosen.episodeNumber}
+            </p>
+            <p className="text-xs text-ink-2">Which TV?</p>
+          </div>
+          <button
+            onClick={() => setChosen(null)}
+            className="text-xs text-muted hover:text-red"
+          >
+            back
+          </button>
+        </div>
+        <ScreenList
+          screens={picker.screens}
+          itemId={chosen.itemId}
+          token={token}
+          onPlaying={setPlaying}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="card mt-2 p-3">
+      <div className="mb-3 flex items-center gap-3">
+        <Poster url={show.posterUrl} title={show.title} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-medium">{show.title}</p>
+          <p className="text-xs text-ink-2">
+            {show.state === 'complete'
+              ? 'You have all of it'
+              : show.state === 'missing'
+                ? 'None of it is in your library'
+                : `${show.missingCount} episode${show.missingCount === 1 ? '' : 's'} missing`}
+          </p>
+        </div>
+      </div>
+
+      <ul className="space-y-1">
+        {show.seasons.map((s) => (
+          <li key={s.seasonNumber} className="rounded-md bg-paper">
+            <button
+              onClick={() =>
+                setOpen(open === s.seasonNumber ? null : s.seasonNumber)
+              }
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm"
+            >
+              <span
+                className={
+                  s.state === 'complete'
+                    ? 'text-sage'
+                    : s.state === 'missing'
+                      ? 'text-muted'
+                      : 'text-gold'
+                }
+              >
+                {SEASON_MARK[s.state]}
+              </span>
+              <span className="flex-1 truncate">{s.name}</span>
+              <span className="shrink-0 text-xs text-muted">
+                {s.state === 'complete'
+                  ? 'Ready'
+                  : s.state === 'missing'
+                    ? 'Not in library'
+                    : `${s.episodeCount - s.ownedCount} missing`}
+              </span>
+            </button>
+
+            {open === s.seasonNumber && s.episodes && (
+              <ul className="border-t border-line-2 px-3 py-1">
+                {s.episodes.map((e) => (
+                  <li
+                    key={e.episodeNumber}
+                    className="flex items-center gap-2 py-1 text-sm"
+                  >
+                    <span className="w-10 shrink-0 text-xs text-muted">
+                      E{e.episodeNumber}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">{e.name}</span>
+                    {e.owned ? (
+                      <button
+                        onClick={() => setChosen(e)}
+                        className="shrink-0 text-xs text-sage hover:underline"
+                      >
+                        watch
+                      </button>
+                    ) : (
+                      <span className="shrink-0 text-xs text-muted">
+                        {e.requested ? 'on the list' : 'not in library'}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      {show.missingCount > 0 && (
+        <button
+          disabled={busy || asked}
+          onClick={addMissing}
+          className="btn mt-3 w-full text-sm disabled:opacity-50"
+        >
+          {asked
+            ? 'Added to the library list'
+            : busy
+              ? 'adding…'
+              : `Add the ${show.missingCount} missing episode${show.missingCount === 1 ? '' : 's'}`}
+        </button>
+      )}
+      {error && <p className="mt-2 text-sm text-red">{error}</p>}
+    </div>
+  );
+}
+
+/** One episode, asked for by name. Play it, or add just that one — never
+ * the whole show. */
+function EpisodePicker({
+  picker,
+  token,
+  onAdded,
+}: {
+  picker: Extract<Picker, { mode: 'episode' }>;
+  token: string;
+  onAdded?: () => void;
+}) {
+  const { episode, seriesTitle } = picker;
+  const [playing, setPlaying] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [asked, setAsked] = useState(false);
+  const [error, setError] = useState('');
+  const label = `${seriesTitle} — S${episode.seasonNumber}E${episode.episodeNumber}`;
+
+  async function addThisOne() {
+    setBusy(true);
+    setError('');
+    try {
+      await api(
+        '/media/requests',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            seriesId: picker.catalogId,
+            episodes: [
+              {
+                season: episode.seasonNumber,
+                episode: episode.episodeNumber,
+              },
+            ],
+          }),
+        },
+        token,
+      );
+      setAsked(true);
+      onAdded?.();
+    } catch (e) {
+      setError(failure(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (playing) {
+    return (
+      <div className="card mt-2 p-3">
+        <p className="eyebrow mb-1">On the TV</p>
+        <p className="text-sm">{playing}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card mt-2 p-3">
+      <p className="eyebrow mb-1">
+        {episode.owned ? 'Which TV?' : 'Not in your library'}
+      </p>
+      <p className="mb-3 text-sm font-medium">
+        {label}
+        <span className="ml-2 font-normal text-muted">{episode.name}</span>
+      </p>
+
+      {episode.owned && episode.itemId ? (
+        <ScreenList
+          screens={picker.screens}
+          itemId={episode.itemId}
+          token={token}
+          onPlaying={setPlaying}
+        />
+      ) : episode.requested || asked ? (
+        <p className="text-sm text-gold">
+          That episode is already on the list.
+        </p>
+      ) : (
+        <button
+          disabled={busy}
+          onClick={addThisOne}
+          className="btn w-full text-sm disabled:opacity-50"
+        >
+          {busy ? 'adding…' : 'Add this episode'}
+        </button>
+      )}
       {error && <p className="mt-2 text-sm text-red">{error}</p>}
     </div>
   );

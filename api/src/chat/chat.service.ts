@@ -20,13 +20,9 @@ const VISION_MODEL = process.env.VISION_MODEL ?? 'qwen2.5vl:7b';
 const MAX_TOOL_ROUNDS = 3;
 // the library tools, hidden when no catalogue key is configured
 const MEDIA_TOOL_NAMES = [
-  'search_movies',
-  'request_movies',
-  'search_series',
-  'get_series_seasons',
-  'get_season_episodes',
-  'request_series',
-  'request_episodes',
+  'search_catalog',
+  'get_show_availability',
+  'add_to_library',
   'get_media_request_status',
 ];
 // the watch-it-now tools, hidden when there is no Jellyfin to play from
@@ -51,34 +47,20 @@ export type StreamEvent =
   | { type: 'error'; message: string };
 
 // the shapes the chat can hand to the ui to be tapped on
+export type PickerFilm = {
+  catalogId: number;
+  title: string;
+  year?: number;
+  overview?: string;
+  posterUrl?: string;
+  inLibrary: boolean;
+  requested: boolean;
+};
+
 export type MediaPicker =
-  | {
-      mode: 'movies';
-      query: string;
-      items: {
-        catalogId: number;
-        title: string;
-        year?: number;
-        overview?: string;
-        posterUrl?: string;
-        inLibrary: boolean;
-        requested: boolean;
-      }[];
-    }
-  | {
-      mode: 'series';
-      query: string;
-      items: {
-        catalogId: number;
-        title: string;
-        year?: number;
-        overview?: string;
-        posterUrl?: string;
-        inLibrary: boolean;
-        requested: boolean;
-      }[];
-    }
-  // "which one?" then "which TV?" — both steps in one card
+  // films or shows to add to the library list
+  | { mode: 'movies' | 'series'; query: string; items: PickerFilm[] }
+  // something we own: pick it, then pick a TV
   | {
       mode: 'play';
       query: string;
@@ -90,6 +72,78 @@ export type MediaPicker =
         runtimeMinutes?: number;
         seriesName?: string;
       }[];
+      screens: {
+        id: string;
+        name: string;
+        kind: string;
+        ready: boolean;
+        nowPlaying?: string;
+      }[];
+    }
+  // we do not have it — here is what it is, and a button to add it
+  | {
+      mode: 'add';
+      query: string;
+      items: {
+        catalogId: number;
+        title: string;
+        year?: number;
+        posterUrl?: string;
+        owned: boolean;
+        requested: boolean;
+      }[];
+    }
+  // a show, season by season: watch what is here, ask for what is not
+  | {
+      mode: 'show';
+      query: string;
+      series: {
+        catalogId: number;
+        title: string;
+        year?: number;
+        posterUrl?: string;
+        itemId?: string;
+        state: string;
+        missingCount: number;
+        seasons: {
+          seasonNumber: number;
+          name: string;
+          episodeCount: number;
+          ownedCount: number;
+          state: string;
+          requested: boolean;
+          episodes?: {
+            seasonNumber: number;
+            episodeNumber: number;
+            name: string;
+            owned: boolean;
+            itemId?: string;
+            requested: boolean;
+          }[];
+        }[];
+      };
+      screens: {
+        id: string;
+        name: string;
+        kind: string;
+        ready: boolean;
+        nowPlaying?: string;
+      }[];
+    }
+  // one episode, asked for by name
+  | {
+      mode: 'episode';
+      query: string;
+      catalogId: number;
+      seriesTitle: string;
+      episode: {
+        seasonNumber: number;
+        episodeNumber: number;
+        name: string;
+        owned: boolean;
+        itemId?: string;
+        requested: boolean;
+      };
       screens: {
         id: string;
         name: string;
@@ -362,13 +416,139 @@ export class ChatService {
               this.log.error(`image gen failed: ${e.message}`);
               result = 'Image generation failed. Apologize briefly.';
             }
-          } else if (name === 'search_movies' || name === 'search_series') {
-            const isSeries = name === 'search_series';
+          } else if (name === 'find_something_to_watch') {
             const query = String(args.query ?? '').trim();
-            emit({
-              type: 'status',
-              text: `Looking up ${query || (isSeries ? 'that show' : 'that film')}`,
-            });
+            emit({ type: 'status', text: `Looking on the shelf for ${query}` });
+            try {
+              // the shelf is asked first, always, and nothing is requested
+              // off the back of someone saying they want to watch something
+              const [found, screens] = await Promise.all([
+                this.media.lookFor(query),
+                this.media.listScreens(),
+              ]);
+              const tvs = screens.map((s) => ({
+                id: s.id,
+                name: s.name,
+                kind: s.kind,
+                ready: s.ready,
+                nowPlaying: s.nowPlaying,
+              }));
+
+              if (found.mode === 'owned') {
+                const picker = {
+                  mode: 'play' as const,
+                  query,
+                  items: found.items.map((i) => ({
+                    itemId: i.id,
+                    title: i.name,
+                    year: i.year,
+                    posterUrl: i.posterUrl,
+                    runtimeMinutes: i.runtimeMinutes,
+                    seriesName: i.seriesName,
+                  })),
+                  screens: tvs,
+                };
+                attachment = { picker };
+                emit({ type: 'picker', picker });
+                result =
+                  JSON.stringify({
+                    inLibrary: true,
+                    found: found.items.map((i) => ({
+                      itemId: i.id,
+                      title: i.name,
+                      year: i.year,
+                    })),
+                    tvs: tvs.map((t) => t.name),
+                  }) +
+                  ' — we own these and they are already on screen as buttons. ' +
+                  'Say in one short line what you found and ask which one and ' +
+                  'which TV. Do not list them all again.';
+              } else if (found.mode === 'missing') {
+                const picker = {
+                  mode: 'add' as const,
+                  query,
+                  items: found.films.map((f) => ({
+                    catalogId: f.catalogId,
+                    title: f.title,
+                    year: f.year,
+                    posterUrl: f.posterUrl,
+                    owned: f.owned,
+                    requested: f.requested,
+                  })),
+                };
+                attachment = { picker };
+                emit({ type: 'picker', picker });
+                result =
+                  JSON.stringify({
+                    inLibrary: false,
+                    couldAdd: found.films.map((f) => ({
+                      catalogId: f.catalogId,
+                      title: f.title,
+                      year: f.year,
+                      alreadyRequested: f.requested,
+                    })),
+                  }) +
+                  ' — we do NOT have this. Tell them so in one warm line and ' +
+                  'that they can add it; an Add button is already on screen. ' +
+                  'Do NOT call add_to_library unless they say yes.';
+              } else if (found.mode === 'series') {
+                const picker = {
+                  mode: 'show' as const,
+                  query,
+                  series: found.series,
+                  screens: tvs,
+                };
+                attachment = { picker };
+                emit({ type: 'picker', picker });
+                result =
+                  JSON.stringify({
+                    show: found.series.title,
+                    state: found.series.state,
+                    missingEpisodes: found.series.missingCount,
+                    seasons: found.series.seasons.map((x) => ({
+                      season: x.seasonNumber,
+                      have: x.ownedCount,
+                      of: x.episodeCount,
+                      state: x.state,
+                    })),
+                  }) +
+                  ' — the seasons are on screen already. Say in one or two ' +
+                  'lines what they have and what is missing. Offer to add the ' +
+                  'missing part only as an offer; do not add anything yet.';
+              } else if (found.mode === 'episode') {
+                const picker = {
+                  mode: 'episode' as const,
+                  query,
+                  catalogId: found.catalogId,
+                  seriesTitle: found.episode.seriesTitle,
+                  episode: found.episode,
+                  screens: tvs,
+                };
+                attachment = { picker };
+                emit({ type: 'picker', picker });
+                result =
+                  JSON.stringify({
+                    show: found.episode.seriesTitle,
+                    season: found.episode.seasonNumber,
+                    episode: found.episode.episodeNumber,
+                    inLibrary: found.episode.owned,
+                    alreadyRequested: found.episode.requested,
+                  }) +
+                  (found.episode.owned
+                    ? ' — we have it. Ask which TV.'
+                    : ' — we do NOT have that one episode. Say so in one line ' +
+                      'and offer to add just that episode. Do not offer the ' +
+                      'whole series and do not add anything yet.');
+              } else {
+                result = `Nothing on the shelf or in the catalogue matches "${query}". Ask them to try another title.`;
+              }
+            } catch (e: any) {
+              result = `Could not look it up: ${e.message}`;
+            }
+          } else if (name === 'search_catalog') {
+            const query = String(args.query ?? '').trim();
+            const isSeries = String(args.kind ?? '') === 'series';
+            emit({ type: 'status', text: `Looking up ${query}` });
             try {
               const items = isSeries
                 ? await this.media.searchSeries(query)
@@ -393,134 +573,87 @@ export class ChatService {
                       requested: i.requested,
                     })),
                   ) +
-                  ' — these are already shown to the user as tick boxes they can tap. Say in one short line what you found and that they can pick, or ask which ones they want. Do not list them all out again.';
+                  ' — these exist in the world; inLibrary says whether we own ' +
+                  'each one. They are on screen as tick boxes. Say in one ' +
+                  'short line what you found. Do not list them all again.';
               }
             } catch (e: any) {
               result = `Lookup failed: ${e.message}`;
             }
-          } else if (name === 'get_series_seasons') {
+          } else if (name === 'get_show_availability') {
             emit({ type: 'status', text: 'Checking the seasons' });
             try {
-              const data = await this.media.seasons(Number(args.seriesId));
+              const series = await this.media.seriesAvailability(
+                Number(args.seriesId),
+              );
               result = JSON.stringify({
-                series: data.series.title,
-                seasons: data.seasons.map((x) => ({
+                show: series.title,
+                state: series.state,
+                missingEpisodes: series.missingCount,
+                seasons: series.seasons.map((x) => ({
                   season: x.seasonNumber,
-                  episodes: x.episodeCount,
-                  inLibrary: x.inLibrary,
+                  have: x.ownedCount,
+                  of: x.episodeCount,
+                  state: x.state,
+                  alreadyRequested: x.requested,
                 })),
               });
             } catch (e: any) {
               result = `Could not read the seasons: ${e.message}`;
             }
-          } else if (name === 'get_season_episodes') {
-            emit({ type: 'status', text: 'Checking the episodes' });
-            try {
-              const data = await this.media.episodes(
-                Number(args.seriesId),
-                Number(args.seasonNumber),
-              );
-              result = JSON.stringify({
-                series: data.series.title,
-                episodes: data.episodes.map((x) => ({
-                  season: x.seasonNumber,
-                  episode: x.episodeNumber,
-                  name: x.name,
-                  inLibrary: x.inLibrary,
-                })),
-              });
-            } catch (e: any) {
-              result = `Could not read the episodes: ${e.message}`;
-            }
-          } else if (
-            name === 'request_movies' ||
-            name === 'request_series' ||
-            name === 'request_episodes'
-          ) {
+          } else if (name === 'add_to_library') {
             emit({ type: 'status', text: 'Adding to the library list' });
             try {
-              const outcomes =
-                name === 'request_movies'
-                  ? await this.media.requestMovies(
-                      userId,
-                      numberList(args.movieIds),
-                    )
-                  : name === 'request_series'
-                    ? await this.media.requestSeries(
-                        userId,
-                        Number(args.seriesId),
-                        numberList(args.seasons),
-                      )
-                    : await this.media.requestEpisodes(
-                        userId,
-                        Number(args.seriesId),
-                        episodeList(args.episodes),
-                      );
-              const queued = outcomes
-                .filter((o) => o.result !== 'already-available')
-                .map((o) => (o as { request: MediaRequestView }).request)
-                .filter(Boolean);
-              if (queued.length) {
-                attachment = { requests: queued };
-                emit({ type: 'requests', requests: queued });
+              const seriesId = Number(args.seriesId);
+              const movieIds = numberList(args.movieIds);
+              const episodes = episodeList(args.episodes);
+              const seasons = numberList(args.seasons);
+              let outcomes: Awaited<
+                ReturnType<typeof this.media.requestMovies>
+              > = [];
+              if (movieIds.length) {
+                outcomes = await this.media.requestMovies(userId, movieIds);
+              } else if (Number.isFinite(seriesId) && args.missingOnly) {
+                outcomes = await this.media.requestMissing(userId, seriesId);
+              } else if (Number.isFinite(seriesId) && episodes.length) {
+                outcomes = await this.media.requestEpisodes(
+                  userId,
+                  seriesId,
+                  episodes,
+                );
+              } else if (Number.isFinite(seriesId)) {
+                outcomes = await this.media.requestSeries(
+                  userId,
+                  seriesId,
+                  seasons,
+                );
+              } else {
+                result =
+                  'Nothing was specified to add. Ask them which film or show they mean.';
               }
-              result =
-                JSON.stringify(
-                  outcomes.map((o) => ({ item: o.label, outcome: o.result })),
-                ) +
-                ' — "already-available" means it is on the shelf already, "already-requested" means it was on the list. Confirm warmly in one or two lines.';
+              if (!result) {
+                const queued = outcomes
+                  .filter((o) => o.result !== 'already-available')
+                  .map((o) => (o as { request: MediaRequestView }).request)
+                  .filter(Boolean);
+                if (queued.length) {
+                  attachment = { requests: queued };
+                  emit({ type: 'requests', requests: queued });
+                }
+                result = outcomes.length
+                  ? JSON.stringify(
+                      outcomes.map((o) => ({
+                        item: o.label,
+                        outcome: o.result,
+                      })),
+                    ) +
+                    ' — "already-available" means it is on the shelf already, ' +
+                    '"already-requested" means it was on the list. Confirm ' +
+                    'warmly in one or two lines.'
+                  : 'There was nothing missing to add — tell them they already have it all.';
+              }
             } catch (e: any) {
               result = `Could not add that: ${e.message}`;
-            }
-          } else if (name === 'find_something_to_watch') {
-            const query = String(args.query ?? '').trim();
-            emit({ type: 'status', text: `Looking on the shelf for ${query}` });
-            try {
-              // the TVs are found at the same time, so the card can ask
-              // "which one?" and "which TV?" without a second round trip
-              const [items, screens] = await Promise.all([
-                this.media.watchable(query),
-                this.media.listScreens(),
-              ]);
-              if (!items.length) {
-                result = `Nothing matching "${query}" is on the shelf. Offer to add it to the library list instead — that is the search_movies tool.`;
-              } else if (!screens.length) {
-                result = `Found ${items.length} match(es) but no TV is reachable right now. Tell them the TV may need to be plugged in or woken up.`;
-              } else {
-                const picker = {
-                  mode: 'play' as const,
-                  query,
-                  items: items.map((i) => ({
-                    itemId: i.id,
-                    title: i.name,
-                    year: i.year,
-                    posterUrl: i.posterUrl,
-                    runtimeMinutes: i.runtimeMinutes,
-                    seriesName: i.seriesName,
-                  })),
-                  screens: screens.map((s) => ({
-                    id: s.id,
-                    name: s.name,
-                    kind: s.kind,
-                    ready: s.ready,
-                    nowPlaying: s.nowPlaying,
-                  })),
-                };
-                attachment = { picker };
-                emit({ type: 'picker', picker });
-                result =
-                  JSON.stringify({
-                    found: items.map((i) => ({
-                      itemId: i.id,
-                      title: i.name,
-                      year: i.year,
-                    })),
-                    tvs: screens.map((s) => s.name),
-                  }) +
-                  ' — the user can already see these and tap one, then tap a TV. Say in one short line which one(s) you found and ask which they want and where. Do not list them all again.';
-              }
-            } catch (e: any) {
-              result = `Could not look on the shelf: ${e.message}`;
             }
           } else if (name === 'list_tvs') {
             emit({ type: 'status', text: 'Looking for the TVs' });
@@ -568,11 +701,9 @@ export class ChatService {
                   rows.map((r) => ({
                     item: r.label,
                     status: r.statusText,
-                    note: r.statusNote,
-                    askedBy: r.requestedBy,
                   })),
                 )
-              : 'Nothing on the library list yet.';
+              : 'Nothing is on the library list right now.';
           } else if (name === 'remember') {
             emit({ type: 'status', text: 'Saving that to memory' });
             await this.prisma.memory.create({

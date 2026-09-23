@@ -12,9 +12,26 @@ import { DROPBOX_DIR } from './paths';
  *
  * Built in is the drop folder: you put a file you are entitled to copy into
  * the watched folder — a disc you ripped, a recording, a download you are
- * licensed for — and the importer files it and marks the request done. Other
- * sources (a TV tuner recording a broadcast, a disc ripper) implement this
- * same interface and register in MEDIA_SOURCES without touching anything else.
+ * licensed for — and the importer files it and the request moves on. Other
+ * sources implement this same interface and are added to the registry below
+ * without touching anything else.
+ *
+ * What a source is responsible for, and only this:
+ *   - say whether it can do anything on this server right now
+ *   - take a request and report which status it should move to
+ *
+ * What a source must never do:
+ *   - mark anything AVAILABLE. Ready to watch is Jellyfin's word alone, and
+ *     it is given in MediaService.confirmImported() once Jellyfin can
+ *     actually see the thing. A source reporting itself finished only ever
+ *     gets a request as far as IMPORTING.
+ *   - leak its own name into anything the family reads. `label` is what they
+ *     might see; the status note should say what is happening, not who is
+ *     doing it.
+ *
+ * Where the file ends up is not a source's business either: anything that
+ * lands in the drop folder is named and filed by LibraryImportService, so a
+ * source that fetches a file need only put it there.
  */
 export interface AcquisitionSource {
   /** stable id stored on the request */

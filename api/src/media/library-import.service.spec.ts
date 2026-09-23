@@ -30,6 +30,9 @@ function services(match: any = null) {
     matchFile: jest.fn(async () => match),
     setStatus: jest.fn(async () => undefined),
     markImported: jest.fn(async () => undefined),
+    // only Jellyfin seeing the file marks something ready; the sweep asks
+    // after every pass
+    confirmImported: jest.fn(async () => []),
   };
   const jellyfin = { refreshLibrary: jest.fn(async () => undefined) };
   return { media, jellyfin };
@@ -101,7 +104,7 @@ describe('LibraryImportService', () => {
     ]);
   });
 
-  it('marks the request it answers as ready to watch', async () => {
+  it('marks the request it answers as almost ready, not ready', async () => {
     const { media, jellyfin } = services({ id: 'req1' });
     const svc = new LibraryImportService(media, jellyfin);
     await drop('Interstellar.2014.mkv');
