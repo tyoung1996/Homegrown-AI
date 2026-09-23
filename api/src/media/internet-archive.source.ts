@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { createWriteStream, promises as fs } from 'fs';
-import { Readable } from 'stream';
+import { Readable, Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import * as path from 'path';
 import { MediaKind, MediaRequest, MediaStatus } from '@prisma/client';
@@ -348,28 +348,22 @@ export class InternetArchiveSource implements AcquisitionSource {
         Number(res.headers.get('content-length') ?? 0) || ref.size || 0;
       this.jobs.set(key, { received: 0, total });
 
+      // counting the bytes as they go past, and letting the pipeline do the
+      // pushing back. doing that by hand means waiting on a drain event that
+      // a readable never emits, which stalls a few hundred kilobytes in.
       let received = 0;
-      const counted = new Readable({
-        read() {
-          /* pushed below */
+      const counter = new Transform({
+        transform: (chunk: Buffer, _enc, done) => {
+          received += chunk.length;
+          this.jobs.set(key, { received, total });
+          done(null, chunk);
         },
       });
-      const reader = (
-        res.body as unknown as ReadableStream<Uint8Array>
-      ).getReader();
-      const pump = async () => {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          received += value.byteLength;
-          this.jobs.set(key, { received, total });
-          if (!counted.push(Buffer.from(value))) {
-            await new Promise((r) => counted.once('drain', r));
-          }
-        }
-        counted.push(null);
-      };
-      await Promise.all([pump(), pipeline(counted, createWriteStream(part))]);
+      await pipeline(
+        Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]),
+        counter,
+        createWriteStream(part),
+      );
 
       // a truncated file is worse than none: if we were told a size, hold
       // the download to it

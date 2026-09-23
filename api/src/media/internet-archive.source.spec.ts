@@ -99,21 +99,21 @@ function archive(opts: {
       return { ok: false, status: opts.downloadStatus, body: null } as any;
     }
     const sent = opts.truncate ? body.subarray(0, 8) : body;
+    // chunked through a real web stream: a single push would never fill the
+    // buffer, and it is the full buffer that used to deadlock
+    const size = 8192;
+    let at = 0;
     return {
       ok: true,
       status: 200,
       headers: { get: () => String(body.byteLength) },
-      body: {
-        getReader: () => {
-          let done = false;
-          return {
-            read: async () =>
-              done
-                ? { done: true, value: undefined }
-                : ((done = true), { done: false, value: new Uint8Array(sent) }),
-          };
+      body: new ReadableStream({
+        pull(controller) {
+          if (at >= sent.length) return controller.close();
+          controller.enqueue(new Uint8Array(sent.subarray(at, at + size)));
+          at += size;
         },
-      },
+      }),
     } as any;
   }) as any;
 }
@@ -497,6 +497,26 @@ describe('fetching it', () => {
     expect(
       await new Source().poll(request({ sourceRef: 'rubbish' })),
     ).toBeNull();
+  });
+
+  it('gets a whole film through, not just the first few hundred kilobytes', async () => {
+    // one that is comfortably bigger than any stream buffer, so the
+    // pushing back is real rather than theoretical
+    const big = Buffer.alloc(3 * 1024 * 1024, 9);
+    archive({
+      ...ok,
+      files: [{ name: 'notld.mp4', size: String(big.length) }],
+      body: big,
+    });
+    const source = new Source();
+    const started = await source.start(request());
+    await new Promise((r) => setTimeout(r, 300));
+
+    const out = await source.poll(request({ sourceRef: started.ref }));
+
+    expect(out?.status).toBe(MediaStatus.IMPORTING);
+    const landed = path.join(dropbox, 'Night of the Living Dead (1968).mp4');
+    expect((await fs.stat(landed)).size).toBe(big.length);
   });
 
   it('does not put a deadline on the download itself', async () => {
