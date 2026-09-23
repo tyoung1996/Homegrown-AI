@@ -437,3 +437,37 @@ describe('ScreensService playing on a Roku', () => {
     ).rejects.toThrow(/Control by mobile apps/);
   });
 });
+
+describe('ScreensService leaving a screen off the list', () => {
+  const ORIGINAL = process.env.SCREEN_IGNORE;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.SCREEN_IGNORE;
+    else process.env.SCREEN_IGNORE = ORIGINAL;
+  });
+
+  const tvs = [
+    { id: 'cast:10.0.0.15', name: '65" Smart UHD', kind: 'cast', ready: false },
+    { id: 'roku:10.0.0.12', name: 'Den TV', kind: 'roku', ready: false },
+  ];
+
+  it('hides a screen that answers but cannot actually play', async () => {
+    process.env.SCREEN_IGNORE = '65 Smart UHD';
+    const { service } = build({ tvs });
+
+    expect((await service.list()).map((s) => s.name)).toEqual(['Den TV']);
+  });
+
+  it('will not find one that has been hidden', async () => {
+    process.env.SCREEN_IGNORE = '65 Smart UHD';
+    const { service } = build({ tvs });
+
+    expect(await service.find('65" Smart UHD')).toBeNull();
+  });
+
+  it('lists everything when nothing is hidden', async () => {
+    delete process.env.SCREEN_IGNORE;
+    const { service } = build({ tvs });
+
+    expect(await service.list()).toHaveLength(2);
+  });
+});

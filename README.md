@@ -60,6 +60,7 @@ what isn't configured:
 | `TMDB_API_KEY` | Free key from [themoviedb.org](https://www.themoviedb.org/settings/api) so titles can be looked up |
 | `JELLYFIN_URL` / `JELLYFIN_API_KEY` | Your [Jellyfin](https://jellyfin.org) server and a key from its Dashboard → API Keys, so the app knows what you already own |
 | `MEDIA_ROOT` / `MEDIA_DROPBOX` | The library folder Jellyfin reads, and the folder new files are picked up from |
+| `SCREEN_IGNORE` | Optional. Names to leave off the TV list, semicolons between, e.g. `Kitchen speaker; 65" Smart UHD` |
 | `SCREEN_NAMES` | Optional. Names your TVs after the rooms they're in, e.g. `55 Roku TV=Front room; Bedroom 2=Nursery` — otherwise they're listed as whatever the TV calls itself |
 
 **How a request becomes a file.** The app keeps the list, the search, the
@@ -91,6 +92,13 @@ separated by semicolons, `device name=room name` — and both names keep
 working, so the name printed on the TV still finds it. Punctuation is
 ignored when matching, so leave the inch marks out and save yourself an
 argument with systemd about quotes.
+
+**A note on TVs with cast built in.** A Chromecast, a Google TV or a dongle
+plugged into any TV all work with nothing to set up. Some TVs advertise cast
+but only for their own apps — Samsung's, in particular, will connect, report
+its volume, and then ignore a request to play. There is no way round that
+from outside the TV: either use a dongle on that set, or put its name in
+`SCREEN_IGNORE` so it stays off the list.
 
 Roku needs two things done once per TV, and the app will name the TV and the
 fix if either is missing:

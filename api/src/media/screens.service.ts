@@ -59,6 +59,23 @@ export interface Screen {
  * just here — this is for the ones you would rather not go and find the
  * remote for.
  */
+/**
+ * Screens to leave off the list entirely. Some things answer on the cast port
+ * without being any use as a TV — speakers, and TVs whose built-in cast is
+ * there for their own apps and quietly ignores anything else. SCREEN_IGNORE
+ * is a semicolon-separated list of their names.
+ */
+function loadIgnored(): Set<string> {
+  const raw = process.env.SCREEN_IGNORE?.trim();
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(/[;\n]/)
+      .map((n) => normalize(n))
+      .filter(Boolean),
+  );
+}
+
 function loadNames(): Map<string, string> {
   const raw = process.env.SCREEN_NAMES?.trim();
   const map = new Map<string, string>();
@@ -106,6 +123,7 @@ export class ScreensService {
   // one play at a time per screen, so two requests for the same TV queue
   private busy = new Map<string, Promise<void>>();
   private names = loadNames();
+  private ignored = loadIgnored();
 
   constructor(private jellyfin: JellyfinService) {}
 
@@ -259,7 +277,9 @@ export class ScreensService {
         if (!mine || Date.now() - mine.at > 4 * 60 * 60_000) return t;
         return { ...t, ready: true, nowPlaying: mine.title };
       });
-    return [...live, ...rest].map((s) => this.rename(s));
+    return [...live, ...rest]
+      .filter((s) => !this.ignored.has(normalize(s.name)))
+      .map((s) => this.rename(s));
   }
 
   /** Give a screen the name the house uses for it, keeping the device's own
