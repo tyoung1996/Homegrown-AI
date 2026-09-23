@@ -339,7 +339,10 @@ export class InternetArchiveSource implements AcquisitionSource {
     try {
       await fs.mkdir(this.workDir(), { recursive: true });
       const url = `${IA}/download/${ref.id}/${encodeURIComponent(ref.file)}`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(0) });
+      // no overall deadline: a film is hundreds of megabytes and any number
+      // we picked would be wrong for someone's connection. a socket that
+      // dies still ends the read loop below.
+      const res = await fetch(url);
       if (!res.ok || !res.body) throw new Error(`download -> ${res.status}`);
       const total =
         Number(res.headers.get('content-length') ?? 0) || ref.size || 0;

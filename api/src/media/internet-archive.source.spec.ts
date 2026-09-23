@@ -499,6 +499,21 @@ describe('fetching it', () => {
     ).toBeNull();
   });
 
+  it('does not put a deadline on the download itself', async () => {
+    // a film is hundreds of megabytes; an abort signal of zero milliseconds
+    // ends it before a byte arrives
+    archive(ok);
+    const source = new Source();
+    await source.start(request());
+    await settle();
+
+    const download = (global.fetch as jest.Mock).mock.calls.find((c) =>
+      String(c[0]).includes('/download/'),
+    );
+    const signal = download?.[1]?.signal;
+    expect(signal?.aborted).not.toBe(true);
+  });
+
   it('can say how far along it is, for the admin panel', async () => {
     archive(ok);
     const source = new Source();
