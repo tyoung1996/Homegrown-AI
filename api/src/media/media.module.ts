@@ -7,7 +7,12 @@ import { AvailabilityService } from './availability.service';
 import { JellyfinService } from './jellyfin.service';
 import { ScreensService } from './screens.service';
 import { LibraryImportService } from './library-import.service';
-import { AcquisitionRegistry, DropFolderSource } from './acquisition';
+import {
+  ACQUISITION_SOURCES,
+  AcquisitionRegistry,
+  AcquisitionSource,
+  DropFolderSource,
+} from './acquisition';
 import { PrismaService } from '../prisma.service';
 
 @Module({
@@ -19,8 +24,17 @@ import { PrismaService } from '../prisma.service';
     AvailabilityService,
     ScreensService,
     LibraryImportService,
-    AcquisitionRegistry,
     DropFolderSource,
+    // the one place that knows which providers exist. a new provider is
+    // added here and nowhere else; ACQUISITION_ORDER decides who goes first
+    {
+      provide: ACQUISITION_SOURCES,
+      useFactory: (dropFolder: DropFolderSource): AcquisitionSource[] => [
+        dropFolder,
+      ],
+      inject: [DropFolderSource],
+    },
+    AcquisitionRegistry,
     PrismaService,
   ],
   // the chat tools need the same service the http api uses

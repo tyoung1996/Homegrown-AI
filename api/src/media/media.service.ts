@@ -10,7 +10,11 @@ import { PrismaService } from '../prisma.service';
 import { CatalogService, CatalogItem } from './catalog.service';
 import { JellyfinService, PlayableItem } from './jellyfin.service';
 import { ScreensService, Screen } from './screens.service';
-import { AcquisitionRegistry } from './acquisition';
+import {
+  AcquisitionRegistry,
+  ProviderHealth,
+  ProviderResult,
+} from './acquisition';
 import { AvailabilityService } from './availability.service';
 import {
   CollectionAvailability,
@@ -113,7 +117,7 @@ export class MediaService {
    * nothing here can take the rest of it with them.
    */
   async health() {
-    const [catalog, jellyfin, source, screens, waiting] = await Promise.all([
+    const [catalog, jellyfin, providers, screens, waiting] = await Promise.all([
       this.catalog.health().catch((e: Error) => ({
         configured: true,
         ok: false,
@@ -124,7 +128,7 @@ export class MediaService {
         ok: false,
         detail: e.message,
       })),
-      this.sources.pick().catch(() => null),
+      this.sources.report().catch((): ProviderHealth[] => []),
       this.screens.list().catch((): Screen[] => []),
       this.prisma.mediaRequest
         .count({ where: { status: { in: OPEN_STATUSES } } })
@@ -134,15 +138,16 @@ export class MediaService {
       app: { ok: true },
       catalog,
       jellyfin,
-      // the family never sees this; the admin panel does
-      acquisition: source
-        ? { ok: true, name: source.name, label: source.label }
-        : {
-            ok: false,
-            name: null,
-            label: 'None configured',
-            detail: 'Nothing is set up to bring files in.',
-          },
+      // the family never sees any of this; the admin panel does
+      acquisition: {
+        // "working" means at least one provider could take something on
+        ok: providers.some((p) => p.ok),
+        providers,
+        // which provider would take each sort of request, as things stand
+        routing: await this.sources
+          .routing()
+          .catch((): Record<string, string | null> => ({})),
+      },
       screens: screens.map((s) => ({
         name: s.name,
         kind: s.kind,
@@ -533,13 +538,15 @@ export class MediaService {
       include: { user: { select: { displayName: true } } },
     });
 
-    // hand it to whatever can actually bring it in
-    const source = await this.sources.pick();
+    // hand it to whatever can actually bring in this sort of thing. which
+    // provider that is, and what it is allowed to say, is the registry's
+    // business — nothing here knows one provider from another
+    const source = await this.sources.pickFor(kind);
     const updated = source
       ? await this.applySource(
           created,
           source.name,
-          await source.start(created),
+          await this.sources.handOff(source, created),
         )
       : await this.setStatus(
           created.id,
@@ -554,13 +561,41 @@ export class MediaService {
   private async applySource(
     request: MediaRequest,
     source: string,
-    outcome: { status: MediaStatus; note: string },
+    outcome: ProviderResult,
   ) {
     return this.prisma.mediaRequest.update({
       where: { id: request.id },
-      data: { status: outcome.status, statusNote: outcome.note, source },
+      data: {
+        status: outcome.status,
+        statusNote: outcome.note,
+        source,
+        ...(outcome.ref ? { sourceRef: outcome.ref } : {}),
+      },
       include: { user: { select: { displayName: true } } },
     });
+  }
+
+  /**
+   * Ask the providers how the things they took on are getting along. This is
+   * for providers that work in the background: rather than smuggling
+   * progress out of start(), they are asked, and whatever they say is put
+   * through the same rules — including the one about not being allowed to
+   * call anything ready to watch.
+   */
+  async pollProviders(): Promise<number> {
+    const waiting = await this.prisma.mediaRequest.findMany({
+      where: { status: { in: [MediaStatus.SEARCHING, MediaStatus.ACQUIRING] } },
+    });
+    let moved = 0;
+    for (const row of waiting) {
+      const source = this.sources.byName(row.source);
+      if (!source?.poll) continue;
+      const result = await this.sources.pollFor(source, row);
+      if (!result || result.status === row.status) continue;
+      await this.applySource(row, source.name, result);
+      moved++;
+    }
+    return moved;
   }
 
   private async onShelf(spec: {

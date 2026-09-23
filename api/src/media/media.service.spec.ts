@@ -1,5 +1,10 @@
 import { MediaKind, MediaStatus, Role } from '@prisma/client';
 import { MediaService } from './media.service';
+import {
+  AcquisitionRegistry,
+  AcquisitionSource,
+  ProviderResult,
+} from './acquisition';
 
 // small stand-ins for the real services; every test says what the catalogue
 // and the shelf contain, then checks what the list does about it
@@ -14,10 +19,12 @@ function build(opts: {
   catalogShows?: { catalogId: number; title: string; year?: number }[];
   rows?: any[];
   sourceAvailable?: boolean;
-  /** what the acquisition source reports when handed a request */
-  sourceResult?: { status: MediaStatus; note: string };
+  /** what the acquisition provider reports when handed a request */
+  sourceResult?: ProviderResult;
   /** the source blows up when asked to take something on */
   sourceThrows?: boolean;
+  /** stand in a whole set of providers instead of the single default */
+  providers?: AcquisitionSource[];
   screens?: { id: string; name: string; kind: string; ready: boolean }[];
 }) {
   const rows: any[] = opts.rows ? [...opts.rows] : [];
@@ -61,6 +68,11 @@ function build(opts: {
       }),
       findUnique: jest.fn(
         async ({ where }: any) => rows.find((r) => r.id === where.id) ?? null,
+      ),
+      count: jest.fn(async ({ where }: any) =>
+        where?.status?.in
+          ? rows.filter((r) => where.status.in.includes(r.status)).length
+          : rows.length,
       ),
     },
   };
@@ -126,6 +138,9 @@ function build(opts: {
       })),
     ),
     searchPlayable: jest.fn(async () => opts.playable ?? []),
+    itemsById: jest.fn(async (ids: string[]) =>
+      (opts.playable ?? []).filter((p) => ids.includes(p.id)),
+    ),
     ownedEpisodes: jest.fn(async () => {
       const series = (opts.shelf ?? []).find((s) => s.type === 'Series');
       if (!series) return null;
@@ -142,25 +157,24 @@ function build(opts: {
     health: jest.fn(async () => ({ configured: true, ok: true })),
   };
 
-  const sources: any = {
-    pick: jest.fn(async () =>
-      opts.sourceAvailable === false
-        ? null
-        : {
-            name: 'drop-folder',
-            label: 'Watched folder',
-            start: async () => {
-              if (opts.sourceThrows) throw new Error('the provider is offline');
-              return (
-                opts.sourceResult ?? {
-                  status: MediaStatus.REQUESTED,
-                  note: 'On the list',
-                }
-              );
-            },
-          },
-    ),
+  // the real registry over a pretend provider, so the rules it enforces are
+  // exercised rather than mocked away
+  const provider: AcquisitionSource = {
+    name: 'test-provider',
+    label: 'Test provider',
+    supports: () => true,
+    available: async () => opts.sourceAvailable !== false,
+    start: async () => {
+      if (opts.sourceThrows) throw new Error('the provider is offline');
+      return (
+        opts.sourceResult ?? {
+          status: MediaStatus.REQUESTED,
+          note: 'On the list',
+        }
+      );
+    },
   };
+  const sources = new AcquisitionRegistry(opts.providers ?? [provider]);
 
   const screens: any = {
     list: jest.fn(async () => opts.screens ?? []),
@@ -208,7 +222,7 @@ describe('MediaService requests', () => {
     expect(outcome.result).toBe('queued');
     expect(outcome.label).toBe('Interstellar (2014)');
     expect(rows).toHaveLength(1);
-    expect(rows[0].source).toBe('drop-folder');
+    expect(rows[0].source).toBe('test-provider');
     expect(rows[0].status).toBe(MediaStatus.REQUESTED);
   });
 
@@ -713,14 +727,18 @@ describe('nothing is ready to watch until Jellyfin says so', () => {
 });
 
 describe('when the way files arrive is having a bad day', () => {
-  it('keeps the request when the provider refuses to take it', async () => {
+  it('keeps the request when the provider falls over, and says so kindly', async () => {
     const { service, rows } = build({ sourceThrows: true });
 
-    await expect(service.requestMovies('u1', [157336])).rejects.toThrow();
+    const [outcome] = await service.requestMovies('u1', [157336]);
 
-    // the ask is not lost just because the provider fell over
+    // the ask is not lost, and the family is not shown a stack trace
     expect(rows).toHaveLength(1);
-    expect(rows[0].label).toBe('Interstellar (2014)');
+    expect(outcome.result).toBe('queued');
+    if (outcome.result === 'queued') {
+      expect(outcome.request.status).toBe(MediaStatus.UNAVAILABLE);
+      expect(outcome.request.statusNote).toMatch(/nothing could take it on/i);
+    }
   });
 
   it('still takes the request when there is no provider at all', async () => {
@@ -780,5 +798,195 @@ describe('two people asking for the same thing', () => {
     expect(first[0].result).toBe('queued');
     expect(second[0].result).toBe('already-requested');
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe('the list with more than one provider behind it', () => {
+  // a provider that only does one kind of thing, so routing has something
+  // to choose between
+  const provider = (
+    name: string,
+    kinds: MediaKind[],
+    opts: { up?: boolean; result?: ProviderResult } = {},
+  ): AcquisitionSource => ({
+    name,
+    label: `${name} provider`,
+    supports: (kind) => kinds.includes(kind),
+    available: async () => opts.up !== false,
+    start: async () =>
+      opts.result ?? { status: MediaStatus.ACQUIRING, note: 'Working on it' },
+  });
+
+  it('sends a film and a show to different providers', async () => {
+    const { service, rows } = build({
+      providers: [
+        provider('films', [MediaKind.MOVIE]),
+        provider('shows', [
+          MediaKind.SERIES,
+          MediaKind.SEASON,
+          MediaKind.EPISODE,
+        ]),
+      ],
+    });
+
+    await service.requestMovies('u1', [157336]);
+    await service.requestSeries('u1', 2316, []);
+
+    expect(rows.find((r) => r.kind === MediaKind.MOVIE).source).toBe('films');
+    expect(rows.find((r) => r.kind === MediaKind.SERIES).source).toBe('shows');
+  });
+
+  it('carries on with the one that works when the other is down', async () => {
+    const { service, rows } = build({
+      providers: [
+        provider('films', [MediaKind.MOVIE], { up: false }),
+        provider('anything', [
+          MediaKind.MOVIE,
+          MediaKind.SERIES,
+          MediaKind.SEASON,
+          MediaKind.EPISODE,
+        ]),
+      ],
+    });
+
+    const [outcome] = await service.requestMovies('u1', [157336]);
+
+    expect(outcome.result).toBe('queued');
+    expect(rows[0].source).toBe('anything');
+  });
+
+  it('says so plainly when nothing can take that sort of request', async () => {
+    const { service } = build({
+      providers: [provider('films', [MediaKind.MOVIE])],
+    });
+
+    const [outcome] = await service.requestSeries('u1', 2316, []);
+
+    if (outcome.result === 'queued') {
+      expect(outcome.request.status).toBe(MediaStatus.UNAVAILABLE);
+      expect(outcome.request.statusText).toBe("Couldn't add it");
+    }
+  });
+
+  it('will not let any provider make something ready to watch', async () => {
+    const { service, rows } = build({
+      providers: [
+        provider('liar', [MediaKind.MOVIE], {
+          result: { status: MediaStatus.AVAILABLE, note: 'Done' } as never,
+        }),
+      ],
+    });
+
+    const [outcome] = await service.requestMovies('u1', [157336]);
+
+    expect(rows[0].status).toBe(MediaStatus.IMPORTING);
+    if (outcome.result === 'queued') {
+      expect(outcome.request.statusText).toBe('Almost ready');
+    }
+  });
+
+  it('asks background providers how they are doing, and moves them on', async () => {
+    const poller: AcquisitionSource = {
+      name: 'slow',
+      label: 'Slow provider',
+      supports: () => true,
+      available: async () => true,
+      start: async () => ({
+        status: MediaStatus.ACQUIRING,
+        note: 'Adding it to the library',
+      }),
+      poll: async () => ({
+        status: MediaStatus.IMPORTING,
+        note: 'Almost ready',
+      }),
+    };
+    const { service, rows } = build({ providers: [poller] });
+    await service.requestMovies('u1', [157336]);
+    expect(rows[0].status).toBe(MediaStatus.ACQUIRING);
+
+    const moved = await service.pollProviders();
+
+    expect(moved).toBe(1);
+    expect(rows[0].status).toBe(MediaStatus.IMPORTING);
+    // and still not ready — that is Jellyfin's to give
+    expect(rows[0].status).not.toBe(MediaStatus.AVAILABLE);
+  });
+
+  it('leaves alone a request whose provider has nothing new to say', async () => {
+    const quiet: AcquisitionSource = {
+      name: 'quiet',
+      label: 'Quiet provider',
+      supports: () => true,
+      available: async () => true,
+      start: async () => ({
+        status: MediaStatus.ACQUIRING,
+        note: 'Adding it to the library',
+      }),
+      poll: async () => null,
+    };
+    const { service, rows } = build({ providers: [quiet] });
+    await service.requestMovies('u1', [157336]);
+
+    expect(await service.pollProviders()).toBe(0);
+    expect(rows[0].status).toBe(MediaStatus.ACQUIRING);
+  });
+});
+
+describe('with every provider down', () => {
+  const dead: AcquisitionSource = {
+    name: 'dead',
+    label: 'Dead provider',
+    supports: () => true,
+    available: async () => false,
+    start: async () => {
+      throw new Error('should never be asked');
+    },
+  };
+
+  it('still plays what we already own', async () => {
+    const { service } = build({
+      providers: [dead],
+      playable: [{ id: 'jf-1', name: 'Interstellar', year: 2014 }],
+      screens: [
+        { id: 'cast:1', name: 'Living room', kind: 'cast', ready: true },
+      ],
+    });
+
+    const found = await service.lookFor('watch Interstellar');
+
+    expect(found.mode).toBe('owned');
+    expect(await service.listScreens()).toHaveLength(1);
+    expect(await service.playOn('jf-1', 'Living room')).toMatch(
+      /Playing .* on Living room/,
+    );
+  });
+
+  it('still says honestly what we do not have', async () => {
+    const { service } = build({
+      providers: [dead],
+      playable: [],
+      catalogMovies: [{ catalogId: 157336, title: 'Interstellar', year: 2014 }],
+    });
+
+    expect((await service.lookFor('watch Interstellar')).mode).toBe('missing');
+  });
+
+  it('still reports the library list', async () => {
+    const { service } = build({ providers: [dead] });
+
+    await expect(service.list('u1')).resolves.toEqual([]);
+  });
+
+  it('reports itself unhealthy without taking anything else down', async () => {
+    const { service } = build({ providers: [dead] });
+
+    const health = await service.health();
+
+    expect(health.app.ok).toBe(true);
+    expect(health.acquisition.ok).toBe(false);
+    expect(health.acquisition.providers[0]).toMatchObject({
+      name: 'dead',
+      ok: false,
+    });
   });
 });

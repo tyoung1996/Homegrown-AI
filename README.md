@@ -60,13 +60,17 @@ what isn't configured:
 | `TMDB_API_KEY` | Free key from [themoviedb.org](https://www.themoviedb.org/settings/api) so titles can be looked up |
 | `JELLYFIN_URL` / `JELLYFIN_API_KEY` | Your [Jellyfin](https://jellyfin.org) server and a key from its Dashboard → API Keys, so the app knows what you already own |
 | `MEDIA_ROOT` / `MEDIA_DROPBOX` | The library folder Jellyfin reads, and the folder new files are picked up from |
+| `ACQUISITION_ORDER` | Optional. Which file provider to prefer, best first, e.g. `tuner,drop-folder`. Anything unnamed goes last |
 | `SCREEN_IGNORE` | Optional. Names to leave off the TV list, semicolons between, e.g. `Kitchen speaker; 65" Smart UHD` |
 | `SCREEN_NAMES` | Optional. Names your TVs after the rooms they're in, e.g. `55 Roku TV=Front room; Bedroom 2=Nursery` — otherwise they're listed as whatever the TV calls itself |
 
 **How a request becomes a file.** The app keeps the list, the search, the
 pickers and the import. Where a file actually comes from is deliberately one
-small piece — `api/src/media/acquisition.ts` — and the built-in one is a
-watched folder: put a file you're entitled to copy into `MEDIA_DROPBOX` (a
+small piece — `api/src/media/acquisition.ts` — and providers live side by
+side there: each declares which of MOVIE, SERIES, SEASON and EPISODE it can
+handle, and a request goes to the first one that handles its kind and is
+working. `ACQUISITION_ORDER` sets which is preferred; one being down never
+stops another, or anything else. The built-in provider is a watched folder: put a file you're entitled to copy into `MEDIA_DROPBOX` (a
 disc you ripped, a recording, anything you're licensed for) and the app
 renames it, files it under `MEDIA_ROOT/Movies` or `MEDIA_ROOT/Shows` the way
 Jellyfin expects, marks the request ready to watch, and tells Jellyfin to

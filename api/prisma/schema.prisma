@@ -155,7 +155,8 @@ model MediaRequest {
   episodeNumber Int?
   status        MediaStatus @default(REQUESTED)
   statusNote    String?     // one plain line about what is happening
-  source        String?     // which acquisition source picked it up
+  source        String?     // which acquisition provider picked it up
+  sourceRef     String?     // that provider's own id for it, for correlation
   filePath      String?     // where it ended up in the library
   jellyfinId    String?
   createdAt     DateTime    @default(now())

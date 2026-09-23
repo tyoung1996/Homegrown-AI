@@ -47,6 +47,15 @@ export interface PlayableItem {
   seriesName?: string;
 }
 
+// the slice of a live session this app reads
+interface TmdbSessionRaw {
+  Id?: string;
+  DeviceName?: string;
+  Client?: string;
+  SupportsRemoteControl?: boolean;
+  NowPlayingItem?: { Name?: string };
+}
+
 export interface JellyfinSession {
   id: string;
   deviceName: string;
@@ -251,9 +260,9 @@ export class JellyfinService {
 
   /** Jellyfin apps that are open right now and will take a play command. */
   async sessions(): Promise<JellyfinSession[]> {
-    const data = await this.call<any[]>('/Sessions');
+    const data = await this.call<TmdbSessionRaw[]>('/Sessions');
     return (data ?? [])
-      .filter((s) => s?.SupportsRemoteControl && s?.DeviceName)
+      .filter((s) => s.SupportsRemoteControl && s.DeviceName)
       .map((s) => ({
         id: String(s.Id),
         deviceName: String(s.DeviceName),

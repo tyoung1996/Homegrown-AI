@@ -33,6 +33,7 @@ function services(match: any = null) {
     // only Jellyfin seeing the file marks something ready; the sweep asks
     // after every pass
     confirmImported: jest.fn(async () => []),
+    pollProviders: jest.fn(async () => 0),
   };
   const jellyfin = { refreshLibrary: jest.fn(async () => undefined) };
   return { media, jellyfin };
