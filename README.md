@@ -80,11 +80,12 @@ TVs and lists them by the name they already have.
 
 Three kinds of TV work, in the order it prefers them:
 
-| | How it plays | Wakes from standby |
-| --- | --- | --- |
-| A Jellyfin app that's already open | Jellyfin tells it to play | already on |
-| Chromecast, Google TV, Samsung and others with Cast built in | plays the file straight from Jellyfin | yes |
-| Roku | hands the file to Roku's own player | yes |
+| | How it plays | Wakes from standby | Needs setting up |
+| --- | --- | --- | --- |
+| A Jellyfin app that's already open | Jellyfin tells it to play | already on | no |
+| Chromecast, Google TV, a dongle | plays the file straight from Jellyfin | yes | no |
+| A TV that speaks UPnP (most Samsung, LG, Sony) | handed the file over UPnP | needs to be on | no |
+| Roku | opened straight onto the film in the Jellyfin app | yes | the channel, once |
 
 TVs name themselves things like `55" Roku TV`, which tells nobody which room
 that is. `SCREEN_NAMES` maps them onto the names your house uses — pairs
@@ -96,9 +97,10 @@ argument with systemd about quotes.
 **A note on TVs with cast built in.** A Chromecast, a Google TV or a dongle
 plugged into any TV all work with nothing to set up. Some TVs advertise cast
 but only for their own apps — Samsung's, in particular, will connect, report
-its volume, and then ignore a request to play. There is no way round that
-from outside the TV: either use a dongle on that set, or put its name in
-`SCREEN_IGNORE` so it stays off the list.
+its volume, and then ignore a request to play. Those sets usually speak UPnP
+instead, which is used in preference wherever a TV offers it, so they work
+with nothing installed either. A set that offers neither can be kept off the
+list with `SCREEN_IGNORE`.
 
 Roku needs two things done once per TV, and the app will name the TV and the
 fix if either is missing:

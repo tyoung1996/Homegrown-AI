@@ -471,3 +471,72 @@ describe('ScreensService leaving a screen off the list', () => {
     expect(await service.list()).toHaveLength(2);
   });
 });
+
+describe('ScreensService playing on a TV that speaks UPnP', () => {
+  const tv = {
+    id: 'dlna:10.0.0.15',
+    name: 'Living room',
+    kind: 'dlna' as const,
+    address: '10.0.0.15',
+    control: '/upnp/control/AVTransport1',
+    ready: false,
+  };
+  const REAL_FETCH = global.fetch;
+  afterEach(() => {
+    global.fetch = REAL_FETCH;
+  });
+
+  function upnp(status = 200) {
+    const sent: { action: string; body: string }[] = [];
+    global.fetch = jest.fn(async (url: any, init: any) => {
+      sent.push({
+        action: String(init?.headers?.soapaction ?? '').split('#')[1] ?? '',
+        body: String(init?.body ?? ''),
+      });
+      return { ok: status < 400, status, text: async () => '' } as any;
+    }) as any;
+    return sent;
+  }
+
+  it('hands over the film and then says play', async () => {
+    const { service } = build({});
+    const sent = upnp();
+
+    await service.play(tv, { id: 'm1', name: 'Encanto', container: 'mp4' });
+
+    expect(sent.map((s) => s.action)).toEqual(['SetAVTransportURI"', 'Play"']);
+    expect(sent[0].body).toContain('CurrentURI');
+    expect(sent[0].body).toContain('Encanto');
+  });
+
+  it('escapes the title rather than breaking the xml', async () => {
+    const { service } = build({});
+    const sent = upnp();
+
+    await service.play(tv, { id: 'm1', name: 'Tom & Jerry' });
+
+    // the description is xml inside an xml value, so it is escaped twice —
+    // once as the title, and again when it is carried in the soap body
+    expect(sent[0].body).toContain('&lt;DIDL-Lite');
+    expect(sent[0].body).toContain('Tom &amp;amp; Jerry');
+    // nothing raw is left to end the element early
+    expect(sent[0].body).not.toContain('Tom & Jerry');
+  });
+
+  it('suggests the TV may be in standby when it refuses', async () => {
+    const { service } = build({});
+    upnp(500);
+
+    await expect(
+      service.play(tv, { id: 'm1', name: 'Encanto' }),
+    ).rejects.toThrow(/standby/);
+  });
+
+  it('stops it', async () => {
+    const { service } = build({});
+    const sent = upnp();
+
+    expect(await service.stop(tv)).toBe('Stopped Living room');
+    expect(sent[0].action).toBe('Stop"');
+  });
+});

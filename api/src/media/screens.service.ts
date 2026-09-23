@@ -20,6 +20,11 @@ import { JellyfinService } from './jellyfin.service';
 
 const CAST_PORT = 8009;
 const ROKU_PORT = 8060;
+// where a TV that speaks UPnP keeps its renderer. Samsung sets advertise cast
+// as well, but their cast is for their own apps and ignores anything else —
+// this is the door that actually opens on them.
+const DLNA_PORT = 9197;
+const AV_TRANSPORT = 'urn:schemas-upnp-org:service:AVTransport:1';
 const SCAN_CACHE_MS = 5 * 60_000;
 const PROBE_TIMEOUT_MS = 400;
 const CAST_LAUNCH_TIMEOUT_MS = 15_000;
@@ -31,7 +36,7 @@ const ROKU_URL_PLAYER = '15985';
 // a Roku takes a moment to come out of standby before it will take a launch
 const ROKU_WAKE_MS = 2500;
 
-export type ScreenKind = 'session' | 'cast' | 'roku';
+export type ScreenKind = 'session' | 'cast' | 'roku' | 'dlna';
 
 export interface Screen {
   id: string; // what the ui and the assistant pass back
@@ -39,6 +44,7 @@ export interface Screen {
   deviceName?: string; // what the TV calls itself, when that differs
   kind: ScreenKind;
   address?: string; // ip, for the ones we wake ourselves
+  control?: string; // upnp control path, for the dlna ones
   ready: boolean; // true when something is already open on it
   nowPlaying?: string;
 }
@@ -190,9 +196,10 @@ export class ScreensService {
 
     await Promise.all(
       hosts.map(async (ip) => {
-        const [isCast, isRoku] = await Promise.all([
+        const [isCast, isRoku, isDlna] = await Promise.all([
           this.open(ip, CAST_PORT),
           this.open(ip, ROKU_PORT),
+          this.open(ip, DLNA_PORT),
         ]);
         if (isRoku) {
           const name = await this.name(
@@ -212,6 +219,11 @@ export class ScreensService {
               address: ip,
               ready: false,
             });
+        } else if (isDlna) {
+          // preferred over cast on a set that offers both: a TV advertising
+          // a renderer will take a film, where its own cast may not
+          const found_ = await this.dlnaRenderer(ip);
+          if (found_) found.push(found_);
         } else if (isCast) {
           const name = await this.name(
             `http://${ip}:8008/setup/eureka_info?params=name`,
@@ -241,6 +253,33 @@ export class ScreensService {
       `found ${found.length} tv(s): ${found.map((f) => f.name).join(', ')}`,
     );
     return found;
+  }
+
+  /** Read a UPnP renderer's description: what it calls itself, and where to
+   * send it a film. */
+  private async dlnaRenderer(ip: string): Promise<Screen | null> {
+    try {
+      const res = await fetch(`http://${ip}:${DLNA_PORT}/dmr`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!res.ok) return null;
+      const body = await res.text();
+      const name = /<friendlyName>(.*?)<\/friendlyName>/.exec(body)?.[1];
+      // the control path sits after the AVTransport service it belongs to
+      const after = body.slice(body.indexOf(AV_TRANSPORT));
+      const control = /<controlURL>(.*?)<\/controlURL>/.exec(after)?.[1];
+      if (!name || !control) return null;
+      return {
+        id: `dlna:${ip}`,
+        name: decodeXml(name),
+        kind: 'dlna',
+        address: ip,
+        control,
+        ready: false,
+      };
+    } catch {
+      return null;
+    }
   }
 
   private subnet(): string | null {
@@ -347,6 +386,8 @@ export class ScreensService {
     const url = this.jellyfin.streamUrl(item.id, this.serverAddress());
     if (screen.kind === 'roku') {
       await this.playOnRoku(screen, item, url);
+    } else if (screen.kind === 'dlna') {
+      await this.playOnDlna(screen, item, url);
     } else {
       await this.playOnCast(screen, url, item.name, item.container);
     }
@@ -415,6 +456,61 @@ export class ScreensService {
         'anything. Add it once from the Roku channel store on that TV, and ' +
         'sign it in.',
     );
+  }
+
+  /**
+   * A TV that speaks UPnP is handed the film in two steps: here is the file,
+   * now play it. No app to install and nothing to sign in, which is what
+   * makes it the way in to a set whose own casting will not cooperate.
+   */
+  private async playOnDlna(
+    screen: Screen,
+    item: { id: string; name: string; container?: string },
+    url: string,
+  ) {
+    const didl =
+      '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" ' +
+      'xmlns:dc="http://purl.org/dc/elements/1.1/" ' +
+      'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">' +
+      `<item id="1" parentID="0" restricted="1"><dc:title>${xml(item.name)}</dc:title>` +
+      '<upnp:class>object.item.videoItem</upnp:class>' +
+      `<res protocolInfo="http-get:*:video/${item.container === 'mp4' ? 'mp4' : 'x-matroska'}:*">${xml(url)}</res>` +
+      '</item></DIDL-Lite>';
+
+    await this.soap(
+      screen,
+      'SetAVTransportURI',
+      `<CurrentURI>${xml(url)}</CurrentURI>` +
+        `<CurrentURIMetaData>${xml(didl)}</CurrentURIMetaData>`,
+    );
+    await this.soap(screen, 'Play', '<Speed>1</Speed>');
+  }
+
+  private async soap(screen: Screen, action: string, inner: string) {
+    const body =
+      '<?xml version="1.0" encoding="utf-8"?>' +
+      '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" ' +
+      's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>' +
+      `<u:${action} xmlns:u="${AV_TRANSPORT}"><InstanceID>0</InstanceID>` +
+      `${inner}</u:${action}></s:Body></s:Envelope>`;
+    const res = await fetch(
+      `http://${screen.address}:${DLNA_PORT}${screen.control ?? ''}`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'text/xml; charset="utf-8"',
+          soapaction: `"${AV_TRANSPORT}#${action}"`,
+        },
+        body,
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (!res.ok) {
+      throw new Error(
+        `${screen.name} would not take the film (${action} came back ${res.status}). ` +
+          'It may need to be switched on rather than in standby.',
+      );
+    }
   }
 
   /** What is installed on a Roku. An empty list means it would not say. */
@@ -500,6 +596,10 @@ export class ScreensService {
   /** Stop whatever is on a screen. */
   async stop(screen: Screen): Promise<string> {
     this.started.delete(screen.id);
+    if (screen.kind === 'dlna') {
+      await this.soap(screen, 'Stop', '').catch(() => undefined);
+      return `Stopped ${screen.name}`;
+    }
     if (screen.kind === 'session') {
       await this.jellyfin.command(screen.id.slice('session:'.length), 'Stop');
       return `Stopped ${screen.name}`;
@@ -551,6 +651,25 @@ export class ScreensService {
 // punctuation and the words that say nothing about which room it is in, so
 // both land on "kids room".
 const NOISE = /^(tv|television|new|old|4k|uhd|hdr|display|screen|the)$/;
+
+// xml bodies carry a url with an api key on it and a title that may have an
+// ampersand in it, so everything that goes in gets escaped
+function xml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function decodeXml(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
 
 function normalize(name: string): string {
   const words = name
