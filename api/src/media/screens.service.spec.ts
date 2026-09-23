@@ -387,13 +387,8 @@ describe('ScreensService playing on a Roku', () => {
     return calls;
   }
 
-  it('opens the Jellyfin app and plays through it once it checks in', async () => {
-    // the app is not running yet; it checks in on the second look
-    let looks = 0;
-    const { service, jellyfin } = build({});
-    jellyfin.sessions = jest.fn(async () =>
-      ++looks < 2 ? [] : [{ id: 'sess-1', deviceName: 'Workout tv' }],
-    );
+  it('opens the Jellyfin app with the film on the end of the launch', async () => {
+    const { service } = build({});
     const calls = roku_({
       apps: apps(['592369', 'Jellyfin'], ['12', 'Netflix']),
     });
@@ -401,8 +396,18 @@ describe('ScreensService playing on a Roku', () => {
     await service.play(roku, { id: 'm1', name: 'Encanto' });
 
     expect(calls).toContain('POST /keypress/PowerOn');
-    expect(calls).toContain('POST /launch/592369');
-    expect(jellyfin.playOnSession).toHaveBeenCalledWith('sess-1', 'm1');
+    expect(calls).toContain('POST /launch/592369?contentId=m1&mediaType=movie');
+  });
+
+  it('deep links an episode as an episode', async () => {
+    const { service } = build({});
+    const calls = roku_({ apps: apps(['592369', 'Jellyfin']) });
+
+    await service.play(roku, { id: 'e9', name: 'Pilot', type: 'Episode' });
+
+    expect(calls).toContain(
+      'POST /launch/592369?contentId=e9&mediaType=episode',
+    );
   });
 
   it('says to install Jellyfin when the TV has no way to play', async () => {
@@ -430,17 +435,5 @@ describe('ScreensService playing on a Roku', () => {
     await expect(
       service.play(roku, { id: 'm1', name: 'Encanto' }),
     ).rejects.toThrow(/Control by mobile apps/);
-  });
-
-  it('gives up cleanly when the app never checks in', async () => {
-    process.env.ROKU_APP_WAIT_MS = '600';
-    const { service, jellyfin } = build({});
-    jellyfin.sessions = jest.fn(async () => []);
-    roku_({ apps: apps(['592369', 'Jellyfin']) });
-
-    await expect(
-      service.play(roku, { id: 'm1', name: 'Encanto' }),
-    ).rejects.toThrow(/never checked in/);
-    delete process.env.ROKU_APP_WAIT_MS;
   });
 });

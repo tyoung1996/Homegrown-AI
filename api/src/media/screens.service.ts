@@ -28,9 +28,8 @@ const CAST_LAUNCH_TIMEOUT_MS = 15_000;
 // a TV either has it or never will. The Roku Media Player channel that IS in
 // the store (id 2213) ignores a url handed to it this way.
 const ROKU_URL_PLAYER = '15985';
-// how long to give the Jellyfin app on a Roku to start up and check in. A
-// cold TV can take twenty seconds; ROKU_APP_WAIT_MS moves it for a slow set.
-const ROKU_APP_WAIT_DEFAULT_MS = 30_000;
+// a Roku takes a moment to come out of standby before it will take a launch
+const ROKU_WAKE_MS = 2500;
 
 export type ScreenKind = 'session' | 'cast' | 'roku';
 
@@ -286,7 +285,7 @@ export class ScreensService {
   /** Put something on a screen. Returns the line to tell the family. */
   async play(
     screen: Screen,
-    item: { id: string; name: string; container?: string },
+    item: { id: string; name: string; container?: string; type?: string },
   ): Promise<string> {
     // one TV can only show one thing: if two people ask for the same screen
     // at once, make them queue rather than half-starting both
@@ -310,7 +309,7 @@ export class ScreensService {
 
   private async start(
     screen: Screen,
-    item: { id: string; name: string; container?: string },
+    item: { id: string; name: string; container?: string; type?: string },
   ): Promise<string> {
     // what it interrupts, so the reply can say so
     const before =
@@ -335,9 +334,15 @@ export class ScreensService {
   }
 
   // roku: wake it, then hand the file to the player its own remote app uses
+  /**
+   * A Roku will not be told to play: the Jellyfin app there reports no remote
+   * control at all, and the channel that takes a url handed to it is hidden
+   * and not in the store. What does work is deep linking — launch the
+   * Jellyfin app with the item on the end of it, and it opens playing.
+   */
   private async playOnRoku(
     screen: Screen,
-    item: { id: string; name: string },
+    item: { id: string; name: string; type?: string },
     url: string,
   ) {
     const base = `http://${screen.address}:${ROKU_PORT}`;
@@ -360,25 +365,19 @@ export class ScreensService {
     const channels = await this.rokuChannels(base);
     const jellyfin = channels.find((c) => /jellyfin/i.test(c.name));
     await post('/keypress/PowerOn').catch(() => false);
+    await new Promise((r) => setTimeout(r, ROKU_WAKE_MS));
 
-    // the Jellyfin app is the good way: once it is up it checks in as a
-    // session, and then it plays like any other Jellyfin app in the house —
-    // right file, right subtitles, and it remembers where you got to
     if (jellyfin) {
-      await post(`/launch/${jellyfin.id}`);
-      const session = await this.waitForSession(screen);
-      if (!session) {
-        throw new Error(
-          `${screen.name} opened Jellyfin but it never checked in — it may ` +
-            'need signing in on that TV once.',
-        );
-      }
-      const ok = await this.jellyfin.playOnSession(session.id, item.id);
-      if (!ok) throw new Error(`${screen.name} did not take the request`);
+      const q = new URLSearchParams({
+        contentId: item.id,
+        mediaType: item.type === 'Episode' ? 'episode' : 'movie',
+      });
+      const ok = await post(`/launch/${jellyfin.id}?${q.toString()}`);
+      if (!ok) throw new Error(`${screen.name} would not open Jellyfin`);
       return;
     }
 
-    // failing that, a TV with the old push-a-url channel can still be used
+    // a TV that shipped with the hidden url channel can still use it
     if (channels.some((c) => c.id === ROKU_URL_PLAYER)) {
       const params = new URLSearchParams({
         t: 'v',
@@ -393,23 +392,9 @@ export class ScreensService {
 
     throw new Error(
       `${screen.name} needs the free Jellyfin channel before it can play ` +
-        'anything. Add it once from the Roku channel store on that TV.',
+        'anything. Add it once from the Roku channel store on that TV, and ' +
+        'sign it in.',
     );
-  }
-
-  /** Wait for a Jellyfin app on this TV to finish starting and check in. */
-  private async waitForSession(screen: Screen) {
-    const want = normalize(screen.deviceName ?? screen.name);
-    const limit =
-      Number(process.env.ROKU_APP_WAIT_MS) || ROKU_APP_WAIT_DEFAULT_MS;
-    const until = Date.now() + limit;
-    while (Date.now() < until) {
-      await new Promise((r) => setTimeout(r, Math.min(2000, limit / 4)));
-      const sessions = await this.jellyfin.sessions();
-      const match = sessions.find((s) => normalize(s.deviceName) === want);
-      if (match) return match;
-    }
-    return null;
   }
 
   /** What is installed on a Roku. An empty list means it would not say. */
