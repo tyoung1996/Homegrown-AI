@@ -217,6 +217,74 @@ describe('deciding what to fetch', () => {
     expect(JSON.parse(String(out.ref)).id).toBe('b');
   });
 
+  it('refuses a different item when an allowlist says which one', async () => {
+    // the live bug: one item eligible on its licence, but not the one that
+    // was approved. taking it would be a swap nobody agreed to
+    process.env.IA_ALLOWED_IDENTIFIERS = 'the_one_i_checked';
+    archive({
+      docs: [
+        {
+          identifier: 'some_other_copy',
+          title: 'Night of the Living Dead',
+          year: '1968',
+          licenseurl: PD,
+        },
+      ],
+      files: [{ name: 'f.mp4', size: '64' }],
+    });
+
+    const out = await new Source().start(request());
+
+    expect(out.status).toBe(MediaStatus.UNAVAILABLE);
+    expect(out.note).toMatch(/no approved copy/i);
+    expect(out.ref).toBeUndefined();
+    expect(await listDrop()).toEqual([]);
+  });
+
+  it('takes the approved one when it is there', async () => {
+    process.env.IA_ALLOWED_IDENTIFIERS = 'the_one_i_checked';
+    archive({
+      docs: [
+        {
+          identifier: 'some_other_copy',
+          title: 'Night of the Living Dead',
+          year: '1968',
+          licenseurl: PD,
+        },
+        {
+          identifier: 'the_one_i_checked',
+          title: 'Night of the Living Dead',
+          year: '1968',
+        },
+      ],
+      files: [{ name: 'f.mp4', size: '64' }],
+    });
+
+    const out = await new Source().start(request());
+
+    expect(out.status).toBe(MediaStatus.ACQUIRING);
+    expect(JSON.parse(String(out.ref)).id).toBe('the_one_i_checked');
+  });
+
+  it('still goes on licence alone when no allowlist is set', async () => {
+    delete process.env.IA_ALLOWED_IDENTIFIERS;
+    archive({
+      docs: [
+        {
+          identifier: 'notld',
+          title: 'Night of the Living Dead',
+          year: '1968',
+          licenseurl: PD,
+        },
+      ],
+      files: [{ name: 'f.mp4', size: '64' }],
+    });
+
+    expect((await new Source().start(request())).status).toBe(
+      MediaStatus.ACQUIRING,
+    );
+  });
+
   it('says so when nothing matches', async () => {
     archive({ docs: [] });
 

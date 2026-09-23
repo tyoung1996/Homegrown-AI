@@ -11,6 +11,7 @@ import {
   IaCandidate,
   IaFile,
   IaRef,
+  allowedIdentifiers,
   decodeRef,
   encodeRef,
   narrow,
@@ -161,7 +162,7 @@ export class InternetArchiveSource implements AcquisitionSource {
       );
     }
 
-    const eligible = candidates.filter((c) => rightsOf(c).ok);
+    let eligible = candidates.filter((c) => rightsOf(c).ok);
     if (!eligible.length) {
       throw new NotEligible(
         "Couldn't add it — there's no free copy of that one.",
@@ -171,16 +172,32 @@ export class InternetArchiveSource implements AcquisitionSource {
             .join(', '),
       );
     }
-    if (eligible.length > 1) {
-      // an allowlisted item settles it; otherwise we stop rather than guess
-      const named = eligible.filter((c) => rightsOf(c).why === 'allowlisted');
-      if (named.length !== 1) {
+
+    // an allowlist is a list of what someone has actually looked at and
+    // approved. once there is one, it is the whole answer: taking a
+    // different item because its licence happened to read well would be
+    // swapping in something nobody agreed to. the Archive does not return
+    // the same results twice running, so this is not hypothetical.
+    const approved = allowedIdentifiers();
+    if (approved.size) {
+      const named = eligible.filter((c) =>
+        approved.has(c.identifier.toLowerCase()),
+      );
+      if (!named.length) {
         throw new NotEligible(
-          "Couldn't add it — there's more than one copy and I'm not sure which is right.",
-          `ambiguous: ${eligible.map((c) => c.identifier).join(', ')}`,
+          "Couldn't add it — there's no approved copy of that one.",
+          `an allowlist is set and none of ${eligible.length} eligible ` +
+            `match(es) is on it: ${eligible.map((c) => c.identifier).join(', ')}`,
         );
       }
-      eligible.splice(0, eligible.length, named[0]);
+      eligible = named;
+    }
+
+    if (eligible.length > 1) {
+      throw new NotEligible(
+        "Couldn't add it — there's more than one copy and I'm not sure which is right.",
+        `ambiguous: ${eligible.map((c) => c.identifier).join(', ')}`,
+      );
     }
 
     const item = eligible[0];
