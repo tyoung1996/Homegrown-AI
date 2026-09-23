@@ -7,6 +7,7 @@ import { AvailabilityService } from './availability.service';
 import { JellyfinService } from './jellyfin.service';
 import { ScreensService } from './screens.service';
 import { LibraryImportService } from './library-import.service';
+import { InternetArchiveSource } from './internet-archive.source';
 import {
   ACQUISITION_SOURCES,
   AcquisitionRegistry,
@@ -25,14 +26,16 @@ import { PrismaService } from '../prisma.service';
     ScreensService,
     LibraryImportService,
     DropFolderSource,
+    InternetArchiveSource,
     // the one place that knows which providers exist. a new provider is
     // added here and nowhere else; ACQUISITION_ORDER decides who goes first
     {
       provide: ACQUISITION_SOURCES,
-      useFactory: (dropFolder: DropFolderSource): AcquisitionSource[] => [
-        dropFolder,
-      ],
-      inject: [DropFolderSource],
+      useFactory: (
+        dropFolder: DropFolderSource,
+        archive: InternetArchiveSource,
+      ): AcquisitionSource[] => [archive, dropFolder],
+      inject: [DropFolderSource, InternetArchiveSource],
     },
     AcquisitionRegistry,
     PrismaService,

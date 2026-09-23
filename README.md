@@ -60,6 +60,8 @@ what isn't configured:
 | `TMDB_API_KEY` | Free key from [themoviedb.org](https://www.themoviedb.org/settings/api) so titles can be looked up |
 | `JELLYFIN_URL` / `JELLYFIN_API_KEY` | Your [Jellyfin](https://jellyfin.org) server and a key from its Dashboard → API Keys, so the app knows what you already own |
 | `MEDIA_ROOT` / `MEDIA_DROPBOX` | The library folder Jellyfin reads, and the folder new files are picked up from |
+| `IA_ENABLED` | Optional. `true` switches on the Internet Archive provider, which fetches films whose rights plainly allow it |
+| `IA_ALLOWED_IDENTIFIERS` | Optional. Archive item identifiers you have checked yourself and approve, comma separated |
 | `ACQUISITION_ORDER` | Optional. Which file provider to prefer, best first, e.g. `tuner,drop-folder`. Anything unnamed goes last |
 | `SCREEN_IGNORE` | Optional. Names to leave off the TV list, semicolons between, e.g. `Kitchen speaker; 65" Smart UHD` |
 | `SCREEN_NAMES` | Optional. Names your TVs after the rooms they're in, e.g. `55 Roku TV=Front room; Bedroom 2=Nursery` — otherwise they're listed as whatever the TV calls itself |
