@@ -6,7 +6,7 @@ import { ActionContext, ActionReply, VerifiedAction } from './verified-action';
 import { StopIntent, recogniseStop, tidy } from './stop-intent';
 
 /**
- * "Stop the TV in the den", "turn Emmy's TV off", "stop the movie". Which
+ * "Stop the TV in the den", "turn Kim's TV off", "stop the movie". Which
  * TV comes from what they said; failing that from this conversation; failing
  * that from the one thing this person has playing. Never a guess between
  * two. The reply is written from what the TV was seen to do afterwards.
@@ -54,7 +54,7 @@ export class StopAction implements VerifiedAction<StopIntent> {
   }
 
   /** The TV they named, through the same resolver as everything else —
-   * tried as said, and as people also say it ("Emmy's TV" for "Emmy's
+   * tried as said, and as people also say it ("Kim's TV" for "Kim's
    * room"). */
   private async resolve(tv: string): Promise<Screen | null> {
     const base = tv.replace(/^the /, '');
@@ -121,7 +121,7 @@ export class StopAction implements VerifiedAction<StopIntent> {
   }
 }
 
-/** What to call a TV in a sentence: "the TV in Emmy and Ty's room". */
+/** What to call a TV in a sentence: "the TV in Kim and Sam's room". */
 function theTv(name: string): string {
   return /\broom$/i.test(name) ? `the TV in ${name}` : name;
 }
