@@ -64,7 +64,49 @@ const ALIASES: Record<string, string[]> = {
   documentaries: ['documentary'],
   musical: ['music'],
   'tv movie': ['tv movie'],
+  'family-friendly': ['family'],
+  'family friendly': ['family'],
+  'kid-friendly': ['family'],
+  'kid friendly': ['family'],
+  'kids movie': ['family'],
+  superhero: ['action'],
+  'super hero': ['action'],
 };
+
+// every genre the catalogue uses, in the vocabulary above
+const KNOWN = new Set([
+  'action',
+  'adventure',
+  'animation',
+  'comedy',
+  'crime',
+  'documentary',
+  'drama',
+  'family',
+  'fantasy',
+  'history',
+  'horror',
+  'music',
+  'mystery',
+  'romance',
+  'science fiction',
+  'thriller',
+  'tv movie',
+  'war',
+  'western',
+  'kids',
+  'news',
+  'reality',
+  'soap',
+  'talk',
+]);
+
+/** A genre word this library could actually have. Anything else — an
+ * invented genre — would filter out everything, so it is left out. */
+export function knownGenre(genre: string): boolean {
+  const w = genreWords(genre);
+  return w.length > 0 && w.every((x) => KNOWN.has(x));
+}
 
 /** "Sci-Fi & Fantasy" -> ["science fiction", "fantasy"] */
 export function genreWords(genre: string): string[] {

@@ -13,6 +13,7 @@ import {
   fits,
   genreWords,
   historyWeights,
+  knownGenre,
   moodGenres,
   score,
 } from './recommend-rules';
@@ -79,6 +80,8 @@ export class RecommendService {
   ) {}
 
   async recommend(userId: string, ask: RecommendAsk): Promise<Recommendations> {
+    // what was asked, never who asked or what they have watched
+    this.log.log(`asked for ${JSON.stringify(ask)}`);
     const person = await this.watchState.personFor(userId);
     const library = await this.jellyfin.libraryFor(person);
     const history = person
@@ -278,11 +281,15 @@ export function readAsk(raw: Record<string, unknown>): RecommendAsk {
   };
   const kind = text(raw.kind);
   const mood = text(raw.mood).toLowerCase();
-  const genres = Array.isArray(raw.genres)
-    ? raw.genres.map(text).filter(Boolean).slice(0, 5)
-    : text(raw.genres)
-      ? [text(raw.genres)]
-      : [];
+  const genres = (
+    Array.isArray(raw.genres)
+      ? raw.genres.map(text)
+      : text(raw.genres)
+        ? [text(raw.genres)]
+        : []
+  )
+    .filter((g) => g && knownGenre(g))
+    .slice(0, 5);
   return {
     ...(kind === 'movie' || kind === 'show' ? { kind } : {}),
     ...(MOODS.includes(mood as Mood) ? { mood: mood as Mood } : {}),

@@ -146,6 +146,17 @@ describe('the rules', () => {
     ]);
   });
 
+  it('"family-friendly" said as a genre still finds family films', () => {
+    const names = shelf
+      .filter((x) => fits(x, { genres: ['family-friendly'] }, true))
+      .map((x) => x.name);
+    expect(names).toEqual([
+      'Wizard School',
+      'Wizard School 2',
+      'Little Otters',
+    ]);
+  });
+
   it('family viewing needs a family certificate', () => {
     const names = shelf
       .filter((x) => fits(x, { forFamily: true }, true))
@@ -470,5 +481,13 @@ describe('reading what the model asked for', () => {
       maxMinutes: 100,
     });
     expect(readAsk({ mood: 'gloomy', kind: 'podcast' })).toEqual({});
+    // an invented genre would filter out everything, so it is dropped;
+    // the ways people say "for families" are understood
+    expect(readAsk({ genres: ['feel-good vibes', 'family-friendly'] })).toEqual(
+      {
+        genres: ['family-friendly'],
+      },
+    );
+    expect(readAsk({ genres: ['cozy'] })).toEqual({});
   });
 });
