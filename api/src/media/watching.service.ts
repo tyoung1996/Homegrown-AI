@@ -26,6 +26,7 @@ import {
   startNote,
 } from './watch-words';
 import { normalizeTitle, titlesMatch } from './filename';
+import { parseEpisodeRef } from './query';
 
 /** Something about to go on a TV. */
 interface Playable {
@@ -120,6 +121,7 @@ export class WatchingService {
   ): Promise<ShowOutcome> {
     const screen = await this.screen(screenRef);
     const linked = !!(await this.watchState.personFor(userId));
+    req = episodeInName(req);
 
     // which show
     let show: { id: string; name: string };
@@ -417,6 +419,32 @@ export class WatchingService {
     const [e] = inOrder(episodes);
     return e ? { item: e, startSeconds: 0, why: 'asked to start over' } : null;
   }
+}
+
+/**
+ * "The Office S03E12" or "the office season 3 episode 12", said as the
+ * show: the episode is in the name, read with the same parser the library
+ * search uses. Numbers given on their own win over ones in the name. Next
+ * and start over are about the whole show, so a number there is dropped.
+ */
+function episodeInName(req: ShowRequest): ShowRequest {
+  const ref = req.show ? parseEpisodeRef(req.show) : null;
+  if (!ref) return req;
+  const show = ref.title || req.show;
+  if (
+    ref.episode == null ||
+    req.action === 'next' ||
+    req.action === 'start-over'
+  ) {
+    return { ...req, show };
+  }
+  return {
+    ...req,
+    show,
+    action: 'episode',
+    season: req.season ?? ref.season,
+    episode: req.episode ?? ref.episode,
+  };
 }
 
 function nothing(message: string): ShowOutcome {

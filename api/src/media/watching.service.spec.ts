@@ -435,6 +435,45 @@ describe('a named episode', () => {
   });
 });
 
+describe('an episode said as part of the show name', () => {
+  it('"The Lighthouse S02E01" plays exactly that episode, resuming it', async () => {
+    const w = build();
+    w.lib.watch('jf-ann', 'lh-s2e1', { pos: 10 });
+    await w.service.playShow(
+      'ann',
+      { show: 'The Lighthouse S02E01', action: 'continue' },
+      'Kids room',
+    );
+    expect(w.last()).toMatchObject({ itemId: 'lh-s2e1', at: 10 * 60 });
+  });
+
+  it('"the lighthouse season 2 episode 1", started over, starts at zero', async () => {
+    const w = build();
+    w.lib.watch('jf-ann', 'lh-s2e1', { pos: 10 });
+    await w.service.playShow(
+      'ann',
+      {
+        show: 'the lighthouse season 2 episode 1',
+        action: 'episode',
+        from: 'start',
+      },
+      'Kids room',
+    );
+    expect(w.last()).toMatchObject({ itemId: 'lh-s2e1', at: 0 });
+  });
+
+  it('with "next", still goes on from where they are', async () => {
+    const w = build();
+    w.lib.watch('jf-ann', 'lh-s1e1', { played: true });
+    await w.service.playShow(
+      'ann',
+      { show: 'The Lighthouse S02E02', action: 'next' },
+      'Kids room',
+    );
+    expect(w.last()).toMatchObject({ itemId: 'lh-s1e2', at: 0 });
+  });
+});
+
 describe('continue my show', () => {
   it('with one show on the go, continues it', async () => {
     const w = build();
