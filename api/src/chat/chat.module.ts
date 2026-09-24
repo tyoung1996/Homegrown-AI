@@ -13,6 +13,12 @@ import { ToolsService } from './tools.service';
 import { ComfyService } from './comfy.service';
 import { PrismaService } from '../prisma.service';
 import { MediaModule } from '../media/media.module';
+import {
+  VERIFIED_ACTIONS,
+  VerifiedAction,
+  VerifiedActions,
+} from './actions/verified-action';
+import { StopAction } from './actions/stop.action';
 
 @Module({
   imports: [MediaModule],
@@ -30,6 +36,15 @@ import { MediaModule } from '../media/media.module';
     ComfyService,
     CalendarService,
     PrismaService,
+    StopAction,
+    // physical actions checked and described without the model. only stop
+    // for now; pause and resume would be registered here the same way
+    {
+      provide: VERIFIED_ACTIONS,
+      useFactory: (stop: StopAction): VerifiedAction[] => [stop],
+      inject: [StopAction],
+    },
+    VerifiedActions,
   ],
 })
 export class ChatModule {}

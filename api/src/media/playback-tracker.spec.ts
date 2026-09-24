@@ -842,3 +842,128 @@ describe('keeping the table small', () => {
     expect(w.rows).toHaveLength(0);
   });
 });
+
+describe('a confirmed stop', () => {
+  const idle = (w: World) => w.tvs.set(cast.id, { state: 'idle' });
+
+  it('takes one last look, stops, and only then closes with that position', async () => {
+    const w = new World();
+    const t = w.tracker();
+    const a = await start(w, t, 'ann', cast, FILM, 0);
+    await watch(w, t, cast, 300);
+    w.tvs.set(cast.id, { ...w.tvs.get(cast.id)!, positionSeconds: 342 });
+    w.pass(5000);
+
+    const got = await t.stopConfirmed(
+      cast,
+      async () => idle(w),
+      async () => 'stopped',
+    );
+
+    expect(got).toBe('stopped');
+    expect(w.row(a.pb)).toMatchObject({
+      state: 'CLOSED',
+      closeReason: 'stopped-by-app',
+    });
+    expect(w.reportsFor(a.pb).at(-1)).toMatchObject({
+      event: 'stopped',
+      position: 342,
+    });
+    expect(w.row(a.pb).settledAt).not.toBeNull();
+  });
+
+  it('a TV still playing afterwards stays open and keeps being followed', async () => {
+    const w = new World();
+    const t = w.tracker();
+    const a = await start(w, t, 'ann', cast, FILM, 0);
+    await watch(w, t, cast, 300);
+
+    const got = await t.stopConfirmed(
+      cast,
+      async () => undefined,
+      async () => 'playing',
+    );
+    expect(got).toBe('still-playing');
+    expect(w.row(a.pb).state).toBe('ACTIVE');
+
+    await watch(w, t, cast, 360);
+    expect(w.jellyfinHas('jf-ann')).toBe(360);
+  });
+
+  it('a TV that will not say stays open', async () => {
+    const w = new World();
+    const t = w.tracker();
+    const a = await start(w, t, 'ann', cast, FILM, 0);
+    await watch(w, t, cast, 300);
+    expect(
+      await t.stopConfirmed(
+        cast,
+        async () => undefined,
+        async () => 'unknown',
+      ),
+    ).toBe('unconfirmed');
+    expect(w.row(a.pb).state).toBe('ACTIVE');
+  });
+
+  it('a stop that throws closes nothing', async () => {
+    const w = new World();
+    const t = w.tracker();
+    const a = await start(w, t, 'ann', cast, FILM, 0);
+    await watch(w, t, cast, 300);
+    await expect(
+      t.stopConfirmed(
+        cast,
+        async () => {
+          throw new Error('no route');
+        },
+        async () => 'stopped',
+      ),
+    ).rejects.toThrow('no route');
+    expect(w.row(a.pb).state).toBe('ACTIVE');
+  });
+
+  it('once closed, the same playback showing again is never picked back up', async () => {
+    const w = new World();
+    const t = w.tracker();
+    const a = await start(w, t, 'ann', cast, FILM, 0);
+    await watch(w, t, cast, 300);
+    await t.stopConfirmed(
+      cast,
+      async () => idle(w),
+      async () => 'stopped',
+    );
+    const count = w.reports.length;
+
+    w.showing(cast, a.pb, FILM, 305);
+    w.pass();
+    await t.tick();
+    await t.refresh(cast.id);
+
+    expect(w.reports.length).toBe(count);
+    expect(w.row(a.pb).state).toBe('CLOSED');
+  });
+
+  it("touches nobody else's playback", async () => {
+    const w = new World();
+    const t = w.tracker();
+    await start(w, t, 'ann', cast, FILM, 0);
+    const b = await start(w, t, 'ben', upnp, FILM, 0);
+    await watch(w, t, cast, 300);
+    await watch(w, t, upnp, 100);
+    const bens = w.reportsFor(b.pb).length;
+
+    await t.stopConfirmed(
+      cast,
+      async () => idle(w),
+      async () => 'stopped',
+    );
+
+    expect(w.row(b.pb).state).toBe('ACTIVE');
+    expect(w.reportsFor(b.pb).length).toBe(bens);
+    expect(
+      w.reports
+        .filter((r) => r.event === 'stopped')
+        .every((r) => r.person === 'jf-ann'),
+    ).toBe(true);
+  });
+});

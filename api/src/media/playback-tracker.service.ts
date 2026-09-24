@@ -126,6 +126,40 @@ export class PlaybackTracker implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /**
+   * Stop a TV and make sure it stopped. One last look first, so the final
+   * position is as fresh as it can be; then the stop; then the TV is asked
+   * whether it really has. Only a confirmed stop closes its playbacks — a TV
+   * that is still playing, or will not say, keeps being followed. If the
+   * stop itself throws, nothing is closed and the error is passed on.
+   */
+  async stopConfirmed(
+    screen: Screen,
+    stop: () => Promise<unknown>,
+    confirm: () => Promise<'stopped' | 'playing' | 'unknown'>,
+  ): Promise<'stopped' | 'still-playing' | 'unconfirmed'> {
+    return this.withLock(`tv:${screen.id}`, async () => {
+      const open = await this.prisma.playback.findMany({
+        where: { screenId: screen.id, state: { in: OPEN } },
+        orderBy: { startedAt: 'desc' },
+      });
+      if (open.length) {
+        await this.apply(open[0].id, await this.observe(open[0]));
+      }
+      await stop();
+      const seen = await confirm();
+      if (seen === 'playing') return 'still-playing';
+      if (seen === 'unknown') return 'unconfirmed';
+      for (const r of open) await this.close(r.id, 'stopped-by-app');
+      return 'stopped';
+    });
+  }
+
+  /** Look at one TV now, as the half-minute look would. */
+  async refresh(screenId: string): Promise<void> {
+    await this.withLock(`tv:${screenId}`, () => this.lookAt(screenId));
+  }
+
   // ------------------------------------------------------------- looking
 
   /** Look at every TV with an open playback, and hand over any final

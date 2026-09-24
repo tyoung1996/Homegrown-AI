@@ -12,6 +12,8 @@ import { ToolsService, TOOL_DEFS } from './tools.service';
 import { ComfyService, IMAGES_DIR } from './comfy.service';
 import { CalendarService } from './calendar.service';
 import { MediaService, MediaRequestView } from '../media/media.service';
+import { stopReply } from './actions/stop.action';
+import { VerifiedActions } from './actions/verified-action';
 import { WatchingService } from '../media/watching.service';
 import { savePhoto } from './photos';
 
@@ -210,6 +212,7 @@ export class ChatService {
     private calendar: CalendarService,
     private media: MediaService,
     private watching: WatchingService,
+    private actions: VerifiedActions,
   ) {}
 
   listConversations(userId: string) {
@@ -291,6 +294,33 @@ export class ChatService {
         imagePath: uploadedImage,
       },
     });
+
+    // a physical action with an obvious request — stop the TV — is done,
+    // checked and described here, never left to the model to decide or
+    // to report
+    if (!uploadedImage) {
+      const acted = await this.actions.handle({
+        userId,
+        conversationId: convo.id,
+        message,
+      });
+      if (acted) {
+        emit({ type: 'token', text: acted.reply });
+        await this.prisma.message.create({
+          data: {
+            conversationId: convo.id,
+            role: 'assistant',
+            content: acted.reply,
+          },
+        });
+        await this.prisma.conversation.update({
+          where: { id: convo.id },
+          data: { updatedAt: new Date() },
+        });
+        emit({ type: 'done' });
+        return;
+      }
+    }
 
     if (uploadedImage) {
       return this.handleImageMessage(
@@ -699,7 +729,13 @@ export class ChatService {
           } else if (name === 'stop_tv') {
             emit({ type: 'status', text: 'Stopping it' });
             try {
-              result = await this.watching.stop(String(args.tv ?? ''));
+              const { outcome, name: tvName } = await this.watching.stopNamed(
+                said((args as { tv?: unknown }).tv),
+              );
+              result =
+                stopReply(outcome, tvName) +
+                ' — this is what really happened. Tell them exactly this; ' +
+                'never say it stopped if this does not.';
             } catch (e) {
               result = `Could not stop it: ${(e as Error).message}`;
             }

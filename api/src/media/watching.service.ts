@@ -56,6 +56,16 @@ export interface ShowRequest {
   from?: 'auto' | 'start';
 }
 
+/** What a stop really did — see stopConfirmed. */
+export type StopOutcome =
+  | 'stopped'
+  | 'nothing-playing'
+  | 'unreachable'
+  | 'failed'
+  | 'still-playing'
+  | 'unconfirmed'
+  | 'unverifiable';
+
 export type ShowOutcome =
   | { kind: 'playing'; message: string }
   | { kind: 'choose'; message: string; shows: string[] }
@@ -250,6 +260,71 @@ export class WatchingService {
     const screen = await this.screens.find(screenRef);
     if (!screen) throw new BadRequestException('I could not find that TV');
     return this.tracker.stop(screen, () => this.screens.stop(screen));
+  }
+
+  /**
+   * Stop a TV and find out whether it really stopped. The answer is what
+   * the TV was seen to do, never just that the command went through:
+   *   stopped          it was playing, and now says it has stopped
+   *   nothing-playing  it was not playing anything to begin with
+   *   unreachable      it did not answer before the stop
+   *   failed           the stop itself went wrong
+   *   still-playing    the stop went through and it is still playing
+   *   unconfirmed      the stop went through and then it would not say
+   *   unverifiable     a TV that cannot be asked (a Roku): told, not checked
+   */
+  async stopConfirmed(screen: Screen): Promise<StopOutcome> {
+    if (screen.kind === 'roku') {
+      try {
+        await this.tracker.stop(screen, () => this.screens.stop(screen));
+        return 'unverifiable';
+      } catch {
+        return 'failed';
+      }
+    }
+    const before = await this.screens.nowPlaying(screen);
+    if (before.state === 'unknown') return 'unreachable';
+    if (before.state === 'idle' || before.state === 'stopped') {
+      // anything this app still had open there is finished with
+      await this.tracker.refresh(screen.id);
+      return 'nothing-playing';
+    }
+    try {
+      const done = await this.tracker.stopConfirmed(
+        screen,
+        () => this.screens.stop(screen),
+        () => this.confirmStopped(screen),
+      );
+      return done;
+    } catch {
+      return 'failed';
+    }
+  }
+
+  /** Stop a TV by name, and say which, with what really happened. */
+  async stopNamed(
+    screenRef: string,
+  ): Promise<{ outcome: StopOutcome; name: string }> {
+    const screen = await this.screens.find(screenRef);
+    if (!screen) throw new BadRequestException('I could not find that TV');
+    return { outcome: await this.stopConfirmed(screen), name: screen.name };
+  }
+
+  /** how long to wait between looks when confirming a stop; tests shorten it */
+  confirmEveryMs = 1500;
+
+  /** Ask the TV a few times whether it has stopped. */
+  private async confirmStopped(
+    screen: Screen,
+  ): Promise<'stopped' | 'playing' | 'unknown'> {
+    let last: 'playing' | 'unknown' = 'unknown';
+    for (let i = 0; i < 5; i++) {
+      await new Promise((r) => setTimeout(r, this.confirmEveryMs));
+      const now = await this.screens.nowPlaying(screen);
+      if (now.state === 'idle' || now.state === 'stopped') return 'stopped';
+      last = now.state === 'unknown' ? 'unknown' : 'playing';
+    }
+    return last;
   }
 
   // ------------------------------------------------------------- looking
