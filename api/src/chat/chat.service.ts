@@ -862,7 +862,11 @@ export class ChatService {
                     (got.linked
                       ? ''
                       : ' Their viewing is not linked to them, so do not ' +
-                        'claim to know what they have watched.')
+                        'claim to know what they have watched.') +
+                    (got.historyUsed
+                      ? ''
+                      : ' None of their own viewing went into this, so do ' +
+                        'not say it is based on what they have watched.')
                   : 'Nothing in the library fits that. Say so, and offer ' +
                     'to look for something new.';
             } catch (e) {

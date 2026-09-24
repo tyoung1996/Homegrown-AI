@@ -441,6 +441,10 @@ describe('recommending', () => {
     });
     const got = await w.svc.recommend('ann', { basedOnHistory: true });
     expect(w.catalog.recommendedWith).toHaveBeenCalledWith('movie', 107);
+    expect(got.historyUsed).toBe(true);
+    expect(
+      (await w.svc.recommend('ben', { basedOnHistory: true })).historyUsed,
+    ).toBe(false);
     expect(got.availableNow[0]).toMatchObject({
       title: 'Star Freight',
       why: expect.stringContaining("goes with what you've been watching"),

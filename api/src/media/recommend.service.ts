@@ -51,6 +51,8 @@ export interface NotOnShelf {
 export interface Recommendations {
   /** false when this person has no linked account: nothing personal used */
   linked: boolean;
+  /** true only when their own viewing actually shaped the list */
+  historyUsed: boolean;
   availableNow: OnShelf[];
   notInLibrary: NotOnShelf[];
 }
@@ -172,7 +174,12 @@ export class RecommendService {
       notInLibrary = await this.beyondShelf(ask, library, alongside);
     }
 
-    return { linked: !!person, availableNow, notInLibrary };
+    return {
+      linked: !!person,
+      historyUsed: history.size > 0,
+      availableNow,
+      notInLibrary,
+    };
   }
 
   private async beyondShelf(
