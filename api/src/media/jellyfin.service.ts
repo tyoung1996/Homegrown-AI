@@ -658,9 +658,183 @@ export class JellyfinService {
     }));
   }
 
+  // ------------------------------------------- reporting, as the person
+
+  /**
+   * Tell Jellyfin how one person's playback is going, the way its own apps
+   * do — so Jellyfin applies its own rules: a start counts a play, a
+   * position under its resume threshold is dropped, one past the watched
+   * threshold marks it watched.
+   *
+   * Jellyfin only credits the account a session is signed in as, so each
+   * playback gets its own short sign-in as that person, approved by the
+   * server through Quick Connect. The sign-in is held in memory only, never
+   * stored or shown, and removed with endPlaybackSession. After a restart a
+   * fresh one is made for the same device, which replaces the old.
+   */
+  async reportPlayback(
+    p: { playbackId: string; jellyfinUserId: string; itemId: string },
+    event: 'start' | 'progress' | 'stopped',
+    positionSeconds: number,
+    paused = false,
+  ): Promise<boolean> {
+    const path =
+      event === 'start'
+        ? '/Sessions/Playing'
+        : event === 'progress'
+          ? '/Sessions/Playing/Progress'
+          : '/Sessions/Playing/Stopped';
+    const body = JSON.stringify({
+      ItemId: p.itemId,
+      PositionTicks: Math.round(positionSeconds * 10_000_000),
+      PlaySessionId: p.playbackId,
+      IsPaused: paused,
+      CanSeek: true,
+      PlayMethod: 'DirectPlay',
+    });
+    // a sign-in that has gone stale is made again, once
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const token =
+        this.signIns.get(p.playbackId) ??
+        (await this.signInAs(p.playbackId, p.jellyfinUserId));
+      if (!token) return false;
+      const res = await this.asDevice(p.playbackId, token, path, {
+        method: 'POST',
+        body,
+      });
+      if (res === 401) {
+        this.signIns.delete(p.playbackId);
+        continue;
+      }
+      return res !== null && res < 300;
+    }
+    return false;
+  }
+
+  /** Remove a playback's sign-in from Jellyfin, and so its session. */
+  async endPlaybackSession(playbackId: string): Promise<boolean> {
+    this.signIns.delete(playbackId);
+    const res = await this.call(
+      `/Devices?id=${encodeURIComponent(deviceFor(playbackId))}`,
+      { method: 'DELETE' },
+    );
+    return res !== null;
+  }
+
+  private signIns = new Map<string, string>();
+
+  private async signInAs(
+    playbackId: string,
+    jellyfinUserId: string,
+  ): Promise<string | null> {
+    if (!this.configured()) return null;
+    const started = await this.asDeviceJson<{ Code?: string; Secret?: string }>(
+      playbackId,
+      null,
+      '/QuickConnect/Initiate',
+      { method: 'POST' },
+    );
+    if (!started?.Code || !started.Secret) {
+      this.log.warn('Quick Connect would not start; is it turned on?');
+      return null;
+    }
+    const approved = await this.call(
+      `/QuickConnect/Authorize?code=${encodeURIComponent(started.Code)}` +
+        `&userId=${encodeURIComponent(jellyfinUserId)}`,
+      { method: 'POST' },
+    );
+    if (approved === null) return null;
+    const login = await this.asDeviceJson<{
+      AccessToken?: string;
+      User?: { Id?: string };
+    }>(playbackId, null, '/Users/AuthenticateWithQuickConnect', {
+      method: 'POST',
+      body: JSON.stringify({ Secret: started.Secret }),
+    });
+    // it must be the person asked for and nobody else
+    if (!login?.AccessToken || !sameId(login.User?.Id, jellyfinUserId)) {
+      await this.endPlaybackSession(playbackId);
+      return null;
+    }
+    this.signIns.set(playbackId, login.AccessToken);
+    return login.AccessToken;
+  }
+
+  /** A call as one playback's own device. Returns the status, or null if
+   * Jellyfin could not be reached. */
+  private async asDevice(
+    playbackId: string,
+    token: string | null,
+    path: string,
+    init: RequestInit,
+  ): Promise<number | null> {
+    try {
+      const res = await fetch(URL_BASE + path, {
+        ...init,
+        headers: {
+          Authorization: deviceAuth(playbackId, token),
+          'content-type': 'application/json',
+        },
+        signal: AbortSignal.timeout(12000),
+      });
+      await res.text().catch(() => '');
+      return res.status;
+    } catch (e) {
+      this.log.warn(`${path} failed: ${(e as Error).message}`);
+      return null;
+    }
+  }
+
+  private async asDeviceJson<T>(
+    playbackId: string,
+    token: string | null,
+    path: string,
+    init: RequestInit,
+  ): Promise<T | null> {
+    try {
+      const res = await fetch(URL_BASE + path, {
+        ...init,
+        headers: {
+          Authorization: deviceAuth(playbackId, token),
+          'content-type': 'application/json',
+        },
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!res.ok) {
+        this.log.warn(`${path} -> ${res.status}`);
+        return null;
+      }
+      return (await res.json()) as T;
+    } catch (e) {
+      this.log.warn(`${path} failed: ${(e as Error).message}`);
+      return null;
+    }
+  }
+
   /** Ask Jellyfin to rescan, so something just imported shows up. */
   async refreshLibrary(): Promise<void> {
     this.cache = { at: 0, items: [] };
     await this.call('/Library/Refresh', { method: 'POST' });
   }
+}
+
+// each playback is its own device in Jellyfin, so its sign-in and session
+// can be told apart from every other and removed on their own
+function deviceFor(playbackId: string): string {
+  return `circuit-barn-${playbackId}`;
+}
+
+function deviceAuth(playbackId: string, token: string | null): string {
+  return (
+    'MediaBrowser ' +
+    (token ? `Token="${token}", ` : '') +
+    `Client="Circuit Barn", Device="Circuit Barn", ` +
+    `DeviceId="${deviceFor(playbackId)}", Version="1.0"`
+  );
+}
+
+// jellyfin writes ids with and without dashes depending on where they came from
+function sameId(a: string | undefined, b: string): boolean {
+  const norm = (x: string) => x.replace(/-/g, '').toLowerCase();
+  return !!a && norm(a) === norm(b);
 }

@@ -341,31 +341,6 @@ export class MediaService {
     return this.screens.list(force);
   }
 
-  /** Put a title on a TV. Both are what the family said — an item id from
-   * watchable(), and a screen id or just the room's name. */
-  async playOn(itemId: string, screenRef: string): Promise<string> {
-    const screen = await this.screens.find(screenRef);
-    if (!screen) {
-      const names = (await this.screens.list()).map((s) => s.name).join(', ');
-      throw new BadRequestException(
-        names
-          ? `I could not find that TV. Right now I can see: ${names}.`
-          : 'I cannot see any TVs on the network right now.',
-      );
-    }
-    const [item] = await this.jellyfin.itemsById([itemId]);
-    if (!item) throw new NotFoundException('That is not in the library');
-    const line = await this.screens.play(screen, item);
-    this.log.log(line);
-    return line;
-  }
-
-  async stopScreen(screenRef: string): Promise<string> {
-    const screen = await this.screens.find(screenRef);
-    if (!screen) throw new BadRequestException('I could not find that TV');
-    return this.screens.stop(screen);
-  }
-
   // ---------------------------------------------------------------- looking
 
   async searchMovies(query: string): Promise<CatalogItemView[]> {

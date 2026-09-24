@@ -391,7 +391,11 @@ export const TOOL_DEFS = [
       name: 'play_on_tv',
       description:
         'Start something playing on a TV. Only ids that came back from ' +
-        'find_something_to_watch, and a TV name from list_tvs.',
+        'find_something_to_watch or what_was_i_watching, and a TV name ' +
+        'from list_tvs. A film they are part way through picks up where ' +
+        'they left off unless they ask to start over. Repeat what this ' +
+        'returns about where it started — some TVs can only start from ' +
+        'the beginning, and you must not say it picked up when it did not.',
       parameters: {
         type: 'object',
         properties: {
@@ -400,8 +404,44 @@ export const TOOL_DEFS = [
             type: 'string',
             description: 'the TV name, e.g. "living room"',
           },
+          from: {
+            type: 'string',
+            enum: ['auto', 'resume', 'start'],
+            description:
+              '"resume" for "continue X" or "carry on with X"; "start" for ' +
+              '"start X over" or "from the beginning"; otherwise leave it out',
+          },
         },
         required: ['itemId', 'tv'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'what_was_i_watching',
+      description:
+        'The films the person talking to you is part way through, most ' +
+        'recent first, and the last few they finished. Use for "what was I ' +
+        'watching?" and for "continue my movie" — then play the first ' +
+        'part-way film with from "resume" (ask which TV if they have not ' +
+        'said). Films only for now; for shows, say you cannot keep their ' +
+        'place in a show yet.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'how_far_into',
+      description:
+        'How far the person talking to you is through one film: "how far ' +
+        'am I into Jaws?". Find the film with find_something_to_watch ' +
+        'first and pass its id.',
+      parameters: {
+        type: 'object',
+        properties: { itemId: { type: 'string' } },
+        required: ['itemId'],
       },
     },
   },

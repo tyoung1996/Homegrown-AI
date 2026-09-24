@@ -388,12 +388,18 @@ export class ScreensService {
     screen: Screen,
     item: { id: string; name: string; container?: string; type?: string },
     startSeconds = 0,
+    playbackId?: string,
   ): Promise<string> {
     // one TV can only show one thing: if two people ask for the same screen
     // at once, make them queue rather than half-starting both
     const ahead = this.busy.get(screen.id);
     if (ahead) await ahead.catch(() => undefined);
-    const run = this.start(screen, item, Math.max(0, Math.floor(startSeconds)));
+    const run = this.start(
+      screen,
+      item,
+      Math.max(0, Math.floor(startSeconds)),
+      playbackId,
+    );
     const slot = run.then(
       () => undefined,
       () => undefined,
@@ -413,6 +419,7 @@ export class ScreensService {
     screen: Screen,
     item: { id: string; name: string; container?: string; type?: string },
     startSeconds: number,
+    given?: string,
   ): Promise<string> {
     // what it interrupts, so the reply can say so
     const before =
@@ -434,7 +441,10 @@ export class ScreensService {
     // every start gets its own id, carried in the link the TV plays, so
     // the TV reports back not just which film but which playback — the same
     // film started twice is two different playbacks
-    const playbackId = randomBytes(8).toString('hex');
+    // the caller may have chosen it already, so it could be written down
+    // before the TV was told anything
+    const playbackId =
+      given && /^[a-f0-9]{16}$/.test(given) ? given : newPlaybackId();
     const url = this.filmUrl(item.id, playbackId);
     if (screen.kind === 'roku') {
       // a deep link carries the item and nothing else; where it starts is
@@ -869,6 +879,11 @@ export interface PlaybackState {
 }
 
 /** The item a link of ours points at, or undefined for anything else. */
+/** A fresh id for one playback: 16 hex characters, random. */
+export function newPlaybackId(): string {
+  return randomBytes(8).toString('hex');
+}
+
 export function itemIdFromUrl(url: string): string | undefined {
   return /\/api\/media\/stream\/([a-f0-9-]{8,64})(?:[?#]|$)/i.exec(url)?.[1];
 }

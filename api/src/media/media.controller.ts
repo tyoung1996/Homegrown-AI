@@ -26,6 +26,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { MediaService, RequestOutcome } from './media.service';
 import { LibraryImportService } from './library-import.service';
 import { WatchStateService } from './watch-state.service';
+import { WatchingService } from './watching.service';
 
 // what the jwt strategy puts on the request
 interface AuthedRequest {
@@ -59,6 +60,7 @@ export class MediaController {
     private media: MediaService,
     private importer: LibraryImportService,
     private watch: WatchStateService,
+    private watching: WatchingService,
   ) {}
 
   @Get('health')
@@ -117,21 +119,28 @@ export class MediaController {
   }
 
   @Post('play')
-  play(@Body() body: { itemId?: string; screen?: string }) {
+  play(
+    @Req() req: AuthedRequest,
+    @Body() body: { itemId?: string; screen?: string; from?: string },
+  ) {
     const itemId = String(body.itemId ?? '').trim();
     const screen = String(body.screen ?? '').trim();
     if (!itemId || !screen) {
       throw new BadRequestException('Pick something to watch and a TV');
     }
-    return this.media
-      .playOn(itemId, screen)
+    const from = body.from ?? 'auto';
+    if (from !== 'auto' && from !== 'resume' && from !== 'start') {
+      throw new BadRequestException('from is auto, resume or start');
+    }
+    return this.watching
+      .play(req.user.userId, itemId, screen, from)
       .then((message) => ({ ok: true, message }));
   }
 
   @Post('stop')
   stop(@Body() body: { screen?: string }) {
-    return this.media
-      .stopScreen(String(body.screen ?? '').trim())
+    return this.watching
+      .stop(String(body.screen ?? '').trim())
       .then((message) => ({ ok: true, message }));
   }
 

@@ -12,6 +12,7 @@ import { ToolsService, TOOL_DEFS } from './tools.service';
 import { ComfyService, IMAGES_DIR } from './comfy.service';
 import { CalendarService } from './calendar.service';
 import { MediaService, MediaRequestView } from '../media/media.service';
+import { WatchingService } from '../media/watching.service';
 import { savePhoto } from './photos';
 
 const OLLAMA = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
@@ -31,6 +32,8 @@ const WATCH_TOOL_NAMES = [
   'list_tvs',
   'play_on_tv',
   'stop_tv',
+  'what_was_i_watching',
+  'how_far_into',
 ];
 
 export type StreamEvent =
@@ -205,6 +208,7 @@ export class ChatService {
     private comfy: ComfyService,
     private calendar: CalendarService,
     private media: MediaService,
+    private watching: WatchingService,
   ) {}
 
   listConversations(userId: string) {
@@ -674,18 +678,60 @@ export class ChatService {
             const tv = String(args.tv ?? '').trim();
             emit({ type: 'status', text: `Putting it on the ${tv}` });
             try {
+              const asked = args as { itemId?: unknown; from?: unknown };
+              const from =
+                asked.from === 'resume' || asked.from === 'start'
+                  ? asked.from
+                  : 'auto';
               result =
-                (await this.media.playOn(String(args.itemId ?? ''), tv)) +
-                ' — it is already starting. Confirm in one short, warm line.';
+                (await this.watching.play(
+                  userId,
+                  String(asked.itemId ?? ''),
+                  tv,
+                  from,
+                )) +
+                ' — it is already starting. Confirm in one short, warm line, ' +
+                'keeping what it says about where it started.';
             } catch (e) {
               result = `It would not start: ${(e as Error).message}`;
             }
           } else if (name === 'stop_tv') {
             emit({ type: 'status', text: 'Stopping it' });
             try {
-              result = await this.media.stopScreen(String(args.tv ?? ''));
+              result = await this.watching.stop(String(args.tv ?? ''));
             } catch (e) {
               result = `Could not stop it: ${(e as Error).message}`;
+            }
+          } else if (name === 'what_was_i_watching') {
+            emit({ type: 'status', text: 'Checking what you were watching' });
+            try {
+              const w = await this.watching.watching(userId);
+              result = !w
+                ? 'Their viewing is not linked to them yet, so you cannot ' +
+                  'tell what they were watching. Say so kindly: a grown-up ' +
+                  'can link it in the admin panel.'
+                : JSON.stringify(w) +
+                  ' — say it naturally ("you were about 40 minutes into ' +
+                  'Jaws"). Never mention ids.';
+            } catch (e) {
+              result = `Could not check: ${(e as Error).message}`;
+            }
+          } else if (name === 'how_far_into') {
+            emit({ type: 'status', text: 'Checking how far you got' });
+            try {
+              const h = await this.watching.howFar(
+                userId,
+                String((args as { itemId?: unknown }).itemId ?? ''),
+              );
+              result =
+                h === null
+                  ? 'Their viewing is not linked to them yet, so you cannot ' +
+                    'tell how far they got. Say so kindly.'
+                  : h === 'not a film'
+                    ? 'You can only keep track of films so far, not shows.'
+                    : JSON.stringify(h) + ' — say it in one natural line.';
+            } catch (e) {
+              result = `Could not check: ${(e as Error).message}`;
             }
           } else if (name === 'get_media_request_status') {
             emit({ type: 'status', text: 'Checking the library list' });

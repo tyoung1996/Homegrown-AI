@@ -46,6 +46,7 @@ model User {
   images        ImageGeneration[]
   memories      Memory[]
   mediaRequests MediaRequest[]
+  playbacks     Playback[]
 }
 
 // saved people for the Studio — a named reference photo the image models
@@ -169,4 +170,40 @@ model MediaRequest {
 
   @@index([status])
   @@index([catalogId])
+}
+
+// where a playback this app started stands. STARTING until the TV is seen
+// playing it, ACTIVE while it is, CLOSED for good after that — a playback
+// never goes backwards
+enum PlaybackState {
+  STARTING
+  ACTIVE
+  CLOSED
+}
+
+// one thing this app put on a TV for one person, kept only so that what the
+// TV reports can be credited to the right person, including across a
+// restart. NOT watch history: Jellyfin keeps that. Closed and settled rows
+// are removed after a while.
+model Playback {
+  id             String        @id // the random id carried in the link the TV plays
+  userId         String // the Circuit Barn person who started it
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jellyfinUserId String // their Jellyfin account, fixed when it started
+  itemId         String // the Jellyfin item
+  screenId       String // which TV
+  protocol       String // how the TV is reached: cast or dlna
+  control        String? // a UPnP TV's control path, to find it again after a restart
+  state          PlaybackState @default(STARTING)
+  startedAt      DateTime      @default(now())
+  lastPosition   Int? // last position the TV confirmed, in seconds
+  lastSeenAt     DateTime? // when it confirmed it
+  reportedAt     DateTime? // when Jellyfin was first told about it
+  closedAt       DateTime?
+  closeReason    String?
+  settledAt      DateTime? // when Jellyfin was given the final position, or there was none to give
+
+  @@index([state])
+  @@index([screenId, startedAt])
+  @@index([jellyfinUserId, itemId, startedAt])
 }

@@ -8,6 +8,8 @@ import { AvailabilityService } from './availability.service';
 import { WatchStateService } from './watch-state.service';
 import { JellyfinService } from './jellyfin.service';
 import { ScreensService } from './screens.service';
+import { PlaybackTracker } from './playback-tracker.service';
+import { WatchingService } from './watching.service';
 import { LibraryImportService } from './library-import.service';
 import { InternetArchiveSource } from './internet-archive.source';
 import {
@@ -27,6 +29,8 @@ import { PrismaService } from '../prisma.service';
     AvailabilityService,
     WatchStateService,
     ScreensService,
+    PlaybackTracker,
+    WatchingService,
     LibraryImportService,
     DropFolderSource,
     InternetArchiveSource,
@@ -51,6 +55,7 @@ import { PrismaService } from '../prisma.service';
     AvailabilityService,
     WatchStateService,
     ScreensService,
+    WatchingService,
   ],
 })
 export class MediaModule {}

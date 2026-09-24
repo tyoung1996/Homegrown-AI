@@ -965,10 +965,8 @@ describe('with every provider down', () => {
     const found = await service.lookFor('watch Interstellar');
 
     expect(found.mode).toBe('owned');
+    // playing it is the watching service's job, and it never asks a provider
     expect(await service.listScreens()).toHaveLength(1);
-    expect(await service.playOn('jf-1', 'Living room')).toMatch(
-      /Playing .* on Living room/,
-    );
   });
 
   it('still says honestly what we do not have', async () => {
