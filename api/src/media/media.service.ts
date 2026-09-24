@@ -21,7 +21,7 @@ import {
   MovieAvailability,
   SeriesAvailability,
 } from './availability';
-import { parseEpisodeRef, titleOf } from './query';
+import { parseEpisodeRef, titleGuesses, titleOf } from './query';
 import { titlesMatch } from './filename';
 
 // what the family sees for each stage — no jargon anywhere in here
@@ -221,9 +221,14 @@ export class MediaService {
       }
     }
 
-    // a film: what is on the shelf, and if nothing, what the catalogue has
-    const owned = await this.jellyfin.searchPlayable(title);
-    if (owned.length) return { mode: 'owned', query, items: owned };
+    // a film: what is on the shelf, and if nothing, what the catalogue has.
+    // the shelf is asked about the whole phrase first and then about less
+    // and less of it, so a question like "do we have harry potter" finds
+    // the films rather than reporting we own nothing
+    for (const guess of titleGuesses(query)) {
+      const owned = await this.jellyfin.searchPlayable(guess);
+      if (owned.length) return { mode: 'owned', query, items: owned };
+    }
 
     const found = await this.catalog.searchMovies(title, 5).catch(() => []);
     if (!found.length) return { mode: 'nothing', query };

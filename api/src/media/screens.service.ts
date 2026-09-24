@@ -3,6 +3,7 @@ import * as net from 'net';
 import * as os from 'os';
 import { Client, DefaultMediaReceiver } from 'castv2-client';
 import { JellyfinService } from './jellyfin.service';
+import { streamToken } from './stream-token';
 
 /**
  * The TVs in the house, and putting something on one of them.
@@ -133,19 +134,30 @@ export class ScreensService {
 
   constructor(private jellyfin: JellyfinService) {}
 
-  /** The address a TV can reach this server on — never 127.0.0.1, since the
-   * request comes from the TV, not from here. */
+  /**
+   * The address a TV can reach this app on — never 127.0.0.1, since the
+   * request comes from the TV. A tunnel address is no good to a TV in the
+   * living room either, so anything that is not a private LAN address is
+   * passed over.
+   */
   serverAddress(): string {
-    const configured = process.env.JELLYFIN_PUBLIC_URL;
+    const configured = process.env.PUBLIC_API_URL;
     if (configured) return configured.replace(/\/+$/, '');
+    const port = process.env.PORT ?? '3001';
     for (const list of Object.values(os.networkInterfaces())) {
       for (const net_ of list ?? []) {
-        if (net_.family === 'IPv4' && !net_.internal) {
-          return `http://${net_.address}:8096`;
+        if (net_.family === 'IPv4' && !net_.internal && isLan(net_.address)) {
+          return `http://${net_.address}:${port}`;
         }
       }
     }
-    return 'http://127.0.0.1:8096';
+    return `http://127.0.0.1:${port}`;
+  }
+
+  /** The link a TV is given for a film: our own address, signed, so the
+   * Jellyfin key stays on the server. */
+  private filmUrl(itemId: string): string {
+    return `${this.serverAddress()}/api/media/stream/${itemId}?t=${streamToken(itemId)}`;
   }
 
   private open(host: string, port: number): Promise<boolean> {
@@ -383,7 +395,7 @@ export class ScreensService {
       return `Playing ${item.name} on ${screen.name}${before}`;
     }
 
-    const url = this.jellyfin.streamUrl(item.id, this.serverAddress());
+    const url = this.filmUrl(item.id);
     if (screen.kind === 'roku') {
       await this.playOnRoku(screen, item, url);
     } else if (screen.kind === 'dlna') {
@@ -669,6 +681,17 @@ function decodeXml(value: string): string {
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&amp;/g, '&');
+}
+
+/** The address ranges a TV in this house could actually reach. A tailscale
+ * or other tunnel address is reachable from the server and from nowhere the
+ * family's TVs are sitting. */
+function isLan(address: string): boolean {
+  return (
+    /^10\./.test(address) ||
+    /^192\.168\./.test(address) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(address)
+  );
 }
 
 function normalize(name: string): string {

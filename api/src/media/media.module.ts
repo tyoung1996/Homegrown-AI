@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { PostersController } from './posters.controller';
+import { StreamController } from './stream.controller';
 import { MediaController } from './media.controller';
 import { MediaService } from './media.service';
 import { CatalogService } from './catalog.service';
@@ -17,7 +18,7 @@ import {
 import { PrismaService } from '../prisma.service';
 
 @Module({
-  controllers: [MediaController, PostersController],
+  controllers: [MediaController, PostersController, StreamController],
   providers: [
     MediaService,
     CatalogService,

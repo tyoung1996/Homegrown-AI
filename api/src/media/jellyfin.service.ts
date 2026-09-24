@@ -290,11 +290,58 @@ export class JellyfinService {
     return res !== null;
   }
 
-  /** A direct link to the file, for TVs that play a url themselves. The key
-   * is in the url because a TV cannot send headers — it is a LAN address on
-   * the family's own network. */
-  streamUrl(itemId: string, base = URL_BASE): string {
-    return `${base}/Videos/${itemId}/stream?static=true&api_key=${KEY}`;
+  /**
+   * The film itself, fetched from Jellyfin with the key in a header where it
+   * belongs. Jellyfin no longer accepts a key in the query string, and a TV
+   * cannot send headers, so the app fetches on the TV's behalf and passes
+   * the bytes along.
+   *
+   * The range header is forwarded both ways, so seeking still works and a
+   * TV can ask for the middle of a film without being sent the start of it.
+   */
+  async stream(
+    itemId: string,
+    range?: string,
+  ): Promise<{
+    status: number;
+    headers: Record<string, string>;
+    body: ReadableStream<Uint8Array> | null;
+  } | null> {
+    if (!this.configured()) return null;
+    try {
+      const res = await fetch(
+        `${URL_BASE}/Videos/${itemId}/stream?static=true`,
+        {
+          headers: {
+            Authorization: AUTH,
+            ...(range ? { range } : {}),
+          },
+        },
+      );
+      if (!res.ok && res.status !== 206) {
+        this.log.warn(`stream ${itemId} -> ${res.status}`);
+        return null;
+      }
+      const pass: Record<string, string> = {};
+      for (const h of [
+        'content-type',
+        'content-length',
+        'content-range',
+        'accept-ranges',
+      ]) {
+        const v = res.headers.get(h);
+        if (v) pass[h] = v;
+      }
+      if (!pass['accept-ranges']) pass['accept-ranges'] = 'bytes';
+      return {
+        status: res.status,
+        headers: pass,
+        body: res.body as ReadableStream<Uint8Array> | null,
+      };
+    } catch (e) {
+      this.log.warn(`stream ${itemId} failed: ${(e as Error).message}`);
+      return null;
+    }
   }
 
   /** Every episode of a series the house owns, by TMDB id. Returns null

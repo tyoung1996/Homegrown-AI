@@ -1,4 +1,9 @@
-import { asksForMissing, parseEpisodeRef, titleOf } from './query';
+import {
+  asksForMissing,
+  parseEpisodeRef,
+  titleGuesses,
+  titleOf,
+} from './query';
 
 describe('reading a season and episode out of a request', () => {
   it.each([
@@ -61,5 +66,33 @@ describe('asking for the rest of something', () => {
   it('does not mistake a plain request for it', () => {
     expect(asksForMissing('add The Office')).toBe(false);
     expect(asksForMissing('watch Interstellar')).toBe(false);
+  });
+});
+
+describe('asking about a title in the way people actually ask', () => {
+  it.each([
+    'do we have harry potter',
+    'have we got harry potter',
+    'is harry potter on here',
+    'do you have harry potter',
+    'hey do we have harry potter',
+  ])('gets to the title from "%s"', (q) => {
+    expect(titleGuesses(q)).toContain('harry potter');
+  });
+
+  it('tries the whole phrase before any shorter version', () => {
+    const guesses = titleGuesses('watch night of the living dead');
+    expect(guesses[0]).toBe('night of the living dead');
+  });
+
+  it('does not chop a title down to nothing', () => {
+    expect(titleGuesses('Up')).toEqual(['Up']);
+    expect(titleGuesses('play Up')).toEqual(['Up']);
+  });
+
+  it('stops before it starts inventing titles', () => {
+    // four words dropped at most, so a long sentence cannot end up
+    // searching for a single common word
+    expect(titleGuesses('a b c d e f g h').length).toBeLessThanOrEqual(5);
   });
 });

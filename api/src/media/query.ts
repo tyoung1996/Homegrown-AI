@@ -95,6 +95,24 @@ export function titleOf(query: string): string {
     .trim();
 }
 
+/**
+ * The title, then shorter and shorter versions of it by dropping a leading
+ * word at a time. No list of filler words will ever be complete, so rather
+ * than insist on stripping exactly right, the caller can try the most
+ * specific version first and fall back — "do we have harry potter" gets to
+ * "harry potter" whether or not every word in front was recognised.
+ */
+export function titleGuesses(query: string, most = 4): string[] {
+  const first = titleOf(query);
+  const words = first.split(' ').filter(Boolean);
+  const out: string[] = [];
+  for (let drop = 0; drop <= Math.min(most, words.length - 1); drop++) {
+    const guess = words.slice(drop).join(' ');
+    if (guess && !out.includes(guess)) out.push(guess);
+  }
+  return out;
+}
+
 /** Pull a season and maybe an episode out of a request. Null when neither
  * was mentioned — which is most of the time. */
 export function parseEpisodeRef(query: string): EpisodeRef | null {
