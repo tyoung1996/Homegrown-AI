@@ -1,4 +1,4 @@
-import { readFileSync, promises as fs } from 'fs';
+import { readFileSync, realpathSync, promises as fs } from 'fs';
 import * as path from 'path';
 import { DROPBOX_DIR, MEDIA_ROOT, MOVIES_SUBDIR, SHOWS_SUBDIR } from './paths';
 
@@ -17,7 +17,9 @@ import { DROPBOX_DIR, MEDIA_ROOT, MOVIES_SUBDIR, SHOWS_SUBDIR } from './paths';
  */
 
 interface MountEntry {
+  source: string;
   point: string;
+  type: string;
   options: string[];
 }
 
@@ -35,7 +37,12 @@ function readTable(file: string): MountEntry[] {
       .filter((l) => l && !l.startsWith('#'))
       .map((l) => l.split(/\s+/))
       .filter((f) => f.length >= 4)
-      .map((f) => ({ point: unescape(f[1]), options: f[3].split(',') }));
+      .map((f) => ({
+        source: unescape(f[0]),
+        point: unescape(f[1]),
+        type: f[2],
+        options: f[3].split(','),
+      }));
   } catch {
     return [];
   }
@@ -43,6 +50,31 @@ function readTable(file: string): MountEntry[] {
 
 const mountsFile = () => process.env.MEDIA_MOUNTS_FILE ?? '/proc/self/mounts';
 const fstabFile = () => process.env.MEDIA_FSTAB_FILE ?? '/etc/fstab';
+const diskDir = () => process.env.MEDIA_DISK_DIR ?? '/dev/disk';
+
+/**
+ * The actual device an fstab source refers to. fstab names drives by UUID
+ * or label so they survive being plugged into a different port; the mount
+ * table names them by device. Both are resolved to the real device node so
+ * they can be compared. Null when the named drive is not attached at all.
+ */
+function deviceOf(spec: string): string | null {
+  const by: Record<string, string> = {
+    UUID: 'by-uuid',
+    LABEL: 'by-label',
+    PARTUUID: 'by-partuuid',
+    PARTLABEL: 'by-partlabel',
+  };
+  const m = /^(UUID|LABEL|PARTUUID|PARTLABEL)=(.+)$/.exec(spec);
+  const link = m
+    ? path.join(diskDir(), by[m[1]], m[2].replace(/^"|"$/g, ''))
+    : spec;
+  try {
+    return realpathSync(link);
+  } catch {
+    return null;
+  }
+}
 
 /** The folder that must be a mounted drive for the library to be real, or
  * null when the library is simply a folder on the system disk. Taken from
@@ -59,25 +91,83 @@ export function requiredMount(): string | null {
   return candidates[0] ?? null;
 }
 
+/** What fstab says should be mounted at a point: which drive, and as what
+ * kind of filesystem. Null when fstab says nothing about it. */
+function expectedAt(point: string): { source: string; type: string } | null {
+  const entry = readTable(fstabFile()).find(
+    (e) => path.resolve(e.point) === point,
+  );
+  return entry ? { source: entry.source, type: entry.type } : null;
+}
+
 export interface LibraryMount {
   /** a separate drive is expected here */
   required: string | null;
+  /** something is mounted there */
   mounted: boolean;
+  /** and it is the drive fstab names, as the filesystem fstab names */
+  expected: boolean;
   readOnly: boolean;
+  /** why it is not the expected drive, when it is not */
+  mismatch?: string;
 }
 
-/** Cheap enough to ask before every write: one read of the mount table. */
+/**
+ * Cheap enough to ask before every write: one read of the mount table, one
+ * of fstab, and a link or two resolved.
+ *
+ * "Something is mounted there" is not good enough. A spare USB stick, a
+ * different disk or a leftover bind mount at the library's mount point is
+ * just as wrong a place for films as the empty folder underneath, so the
+ * device and the filesystem type are both checked against fstab.
+ */
 export function libraryMount(): LibraryMount {
   const required = requiredMount();
-  if (!required) return { required: null, mounted: true, readOnly: false };
+  if (!required) {
+    return { required: null, mounted: true, expected: true, readOnly: false };
+  }
   const entry = readTable(mountsFile())
     .reverse() // the last mount at a point is the one in effect
     .find((e) => path.resolve(e.point) === required);
-  return {
-    required,
-    mounted: !!entry,
-    readOnly: !!entry && entry.options.includes('ro'),
-  };
+  if (!entry) {
+    return { required, mounted: false, expected: false, readOnly: false };
+  }
+  const readOnly = entry.options.includes('ro');
+  const want = expectedAt(required);
+  // named by MEDIA_MOUNT alone, with nothing in fstab to check against:
+  // being mounted is all that can be asked
+  if (!want) return { required, mounted: true, expected: true, readOnly };
+
+  const wantDevice = deviceOf(want.source);
+  const haveDevice = deviceOf(entry.source) ?? entry.source;
+  if (!wantDevice) {
+    return {
+      required,
+      mounted: true,
+      expected: false,
+      readOnly,
+      mismatch: `${want.source} is not attached, but ${entry.source} is mounted at ${required}`,
+    };
+  }
+  if (wantDevice !== haveDevice) {
+    return {
+      required,
+      mounted: true,
+      expected: false,
+      readOnly,
+      mismatch: `${haveDevice} is mounted at ${required}; fstab expects ${want.source} (${wantDevice})`,
+    };
+  }
+  if (want.type !== 'auto' && want.type !== entry.type) {
+    return {
+      required,
+      mounted: true,
+      expected: false,
+      readOnly,
+      mismatch: `${required} is mounted as ${entry.type}; fstab expects ${want.type}`,
+    };
+  }
+  return { required, mounted: true, expected: true, readOnly };
 }
 
 /** May files be written into the library right now? */
@@ -86,8 +176,15 @@ export function libraryWritable(): { ok: boolean; why?: string } {
   if (!m.mounted) {
     return { ok: false, why: `${m.required} is not mounted` };
   }
-  if (m.readOnly)
+  if (!m.expected) {
+    return {
+      ok: false,
+      why: m.mismatch ?? `${m.required} is not the expected drive`,
+    };
+  }
+  if (m.readOnly) {
     return { ok: false, why: `${m.required} is mounted read-only` };
+  }
   return { ok: true };
 }
 
@@ -108,7 +205,7 @@ async function canWrite(dir: string): Promise<boolean> {
 
 export interface StorageHealth {
   ok: boolean;
-  state: 'mounted' | 'read-only' | 'missing' | 'folder';
+  state: 'mounted' | 'read-only' | 'missing' | 'wrong-drive' | 'folder';
   mountPoint: string | null;
   movies: boolean;
   shows: boolean;
@@ -122,6 +219,18 @@ export async function storageHealth(): Promise<StorageHealth> {
   const m = libraryMount();
   const movies = path.join(MEDIA_ROOT, MOVIES_SUBDIR);
   const shows = path.join(MEDIA_ROOT, SHOWS_SUBDIR);
+  if (m.mounted && !m.expected) {
+    return {
+      ok: false,
+      state: 'wrong-drive',
+      mountPoint: m.required,
+      movies: false,
+      shows: false,
+      incoming: false,
+      incomingWritable: false,
+      detail: `${m.mismatch} — nothing will be written until the right drive is mounted`,
+    };
+  }
   if (!m.mounted) {
     return {
       ok: false,
