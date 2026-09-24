@@ -143,6 +143,24 @@ describe('a show, for one person', () => {
     expect(s.startSeconds).toBe(10 * 60);
   });
 
+  it('resumes a part-watched episode even when next-up points back at the first', () => {
+    // seen on the real server: with nothing finished yet, Jellyfin's
+    // next-up answers episode 1 while episode 3 is half watched
+    const mid = ep(1, 3, { positionTicks: 9 * MIN });
+    const s = seriesStart(
+      {
+        resuming: [mid],
+        nextUp: ep(1, 1),
+        episodes: [ep(1, 1), ep(1, 2), mid],
+      },
+      'auto',
+      RULES,
+    )!;
+    expect(s.item.id).toBe('s1e3');
+    expect(s.startSeconds).toBe(9 * 60);
+    expect(s.why).toBe('resuming');
+  });
+
   it("follows Jellyfin's next-up when nothing is part watched", () => {
     const s = seriesStart(
       {
