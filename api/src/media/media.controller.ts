@@ -25,6 +25,7 @@ import { Type } from 'class-transformer';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { MediaService, RequestOutcome } from './media.service';
 import { LibraryImportService } from './library-import.service';
+import { WatchStateService } from './watch-state.service';
 
 // what the jwt strategy puts on the request
 interface AuthedRequest {
@@ -57,6 +58,7 @@ export class MediaController {
   constructor(
     private media: MediaService,
     private importer: LibraryImportService,
+    private watch: WatchStateService,
   ) {}
 
   @Get('health')
@@ -188,5 +190,25 @@ export class MediaController {
     if (req.user.role !== Role.ADMIN)
       throw new ForbiddenException('Admins only');
     return this.importer.sweep();
+  }
+
+  /** Who is linked to which Jellyfin account. Admins only: this is where a
+   * person is tied to their own watch history. */
+  @Get('people')
+  people(@Req() req: AuthedRequest) {
+    if (req.user.role !== Role.ADMIN)
+      throw new ForbiddenException('Admins only');
+    return this.watch.people();
+  }
+
+  @Post('people/:id')
+  link(
+    @Req() req: AuthedRequest,
+    @Param('id') id: string,
+    @Body() body: { jellyfinUserId?: string | null },
+  ) {
+    if (req.user.role !== Role.ADMIN)
+      throw new ForbiddenException('Admins only');
+    return this.watch.link(id, body.jellyfinUserId ?? null);
   }
 }

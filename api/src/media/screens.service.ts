@@ -357,12 +357,13 @@ export class ScreensService {
   async play(
     screen: Screen,
     item: { id: string; name: string; container?: string; type?: string },
+    startSeconds = 0,
   ): Promise<string> {
     // one TV can only show one thing: if two people ask for the same screen
     // at once, make them queue rather than half-starting both
     const ahead = this.busy.get(screen.id);
     if (ahead) await ahead.catch(() => undefined);
-    const run = this.start(screen, item);
+    const run = this.start(screen, item, Math.max(0, Math.floor(startSeconds)));
     const slot = run.then(
       () => undefined,
       () => undefined,
@@ -381,6 +382,7 @@ export class ScreensService {
   private async start(
     screen: Screen,
     item: { id: string; name: string; container?: string; type?: string },
+    startSeconds: number,
   ): Promise<string> {
     // what it interrupts, so the reply can say so
     const before =
@@ -390,18 +392,30 @@ export class ScreensService {
 
     if (screen.kind === 'session') {
       const sessionId = screen.id.slice('session:'.length);
-      const ok = await this.jellyfin.playOnSession(sessionId, item.id);
+      const ok = await this.jellyfin.playOnSession(
+        sessionId,
+        item.id,
+        startSeconds * 10_000_000,
+      );
       if (!ok) throw new Error(`${screen.name} did not take the request`);
       return `Playing ${item.name} on ${screen.name}${before}`;
     }
 
     const url = this.filmUrl(item.id);
     if (screen.kind === 'roku') {
+      // a deep link carries the item and nothing else; where it starts is
+      // up to the Jellyfin app on the Roku
       await this.playOnRoku(screen, item, url);
     } else if (screen.kind === 'dlna') {
-      await this.playOnDlna(screen, item, url);
+      await this.playOnDlna(screen, item, url, startSeconds);
     } else {
-      await this.playOnCast(screen, url, item.name, item.container);
+      await this.playOnCast(
+        screen,
+        url,
+        item.name,
+        item.container,
+        startSeconds,
+      );
     }
     return `Playing ${item.name} on ${screen.name}${before}`;
   }
@@ -479,6 +493,7 @@ export class ScreensService {
     screen: Screen,
     item: { id: string; name: string; container?: string },
     url: string,
+    startSeconds = 0,
   ) {
     const didl =
       '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" ' +
@@ -496,6 +511,22 @@ export class ScreensService {
         `<CurrentURIMetaData>${xml(didl)}</CurrentURIMetaData>`,
     );
     await this.soap(screen, 'Play', '<Speed>1</Speed>');
+
+    if (startSeconds > 0) {
+      // a seek sent before the TV has begun is dropped by some sets, so
+      // wait until it says it is playing, then move to the saved point
+      const until = Date.now() + 15_000;
+      while (Date.now() < until) {
+        const info = await this.soap(screen, 'GetTransportInfo', '');
+        if (/<CurrentTransportState>PLAYING</.test(info)) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      await this.soap(
+        screen,
+        'Seek',
+        `<Unit>REL_TIME</Unit><Target>${clock(startSeconds)}</Target>`,
+      );
+    }
   }
 
   private async soap(screen: Screen, action: string, inner: string) {
@@ -523,6 +554,7 @@ export class ScreensService {
           'It may need to be switched on rather than in standby.',
       );
     }
+    return res.text();
   }
 
   /** What is installed on a Roku. An empty list means it would not say. */
@@ -551,6 +583,7 @@ export class ScreensService {
     url: string,
     title: string,
     container?: string,
+    startSeconds = 0,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       const client = new Client();
@@ -592,7 +625,7 @@ export class ScreensService {
               streamType: 'BUFFERED',
               metadata: { type: 0, metadataType: 0, title },
             },
-            { autoplay: true },
+            { autoplay: true, currentTime: startSeconds },
             (loadErr) => {
               clearTimeout(timer);
               if (loadErr) return fail(loadErr);
@@ -600,6 +633,111 @@ export class ScreensService {
               resolve();
             },
           );
+        });
+      });
+    });
+  }
+
+  /**
+   * What a TV is actually doing, read from the TV itself — or, for an app
+   * that reports to Jellyfin, from Jellyfin. The item is identified from the
+   * link it is playing, so something else started on the same TV is seen as
+   * something else, not mistaken for the film that was there before.
+   */
+  async nowPlaying(screen: Screen): Promise<PlaybackState> {
+    try {
+      if (screen.kind === 'dlna') return await this.dlnaState(screen);
+      if (screen.kind === 'cast') return await this.castState(screen);
+      if (screen.kind === 'session') {
+        const id = screen.id.slice('session:'.length);
+        const s = (await this.jellyfin.liveSessions()).find((x) => x.id === id);
+        if (!s) return { state: 'unknown', detail: 'session gone' };
+        return s.nowPlayingId
+          ? {
+              state: s.paused ? 'paused' : 'playing',
+              itemId: s.nowPlayingId,
+              positionSeconds: Math.floor((s.positionTicks ?? 0) / 10_000_000),
+            }
+          : { state: 'idle' };
+      }
+      return { state: 'unknown', detail: 'read through its Jellyfin session' };
+    } catch (e) {
+      return { state: 'unknown', detail: (e as Error).message };
+    }
+  }
+
+  private async dlnaState(screen: Screen): Promise<PlaybackState> {
+    const [info, pos] = [
+      await this.soap(screen, 'GetTransportInfo', ''),
+      await this.soap(screen, 'GetPositionInfo', ''),
+    ];
+    const tag = (x: string, t: string) =>
+      new RegExp(`<${t}>([^<]*)</${t}>`).exec(x)?.[1];
+    const transport = tag(info, 'CurrentTransportState') ?? '';
+    const state: PlaybackState['state'] =
+      transport === 'PLAYING'
+        ? 'playing'
+        : transport === 'PAUSED_PLAYBACK'
+          ? 'paused'
+          : transport === 'TRANSITIONING'
+            ? 'buffering'
+            : transport === 'STOPPED' || transport === 'NO_MEDIA_PRESENT'
+              ? 'stopped'
+              : 'unknown';
+    const uri = decodeXml(tag(pos, 'TrackURI') ?? '');
+    return {
+      state,
+      itemId: itemIdFromUrl(uri),
+      positionSeconds: seconds(tag(pos, 'RelTime')),
+      durationSeconds: seconds(tag(pos, 'TrackDuration')),
+      detail: transport,
+    };
+  }
+
+  /** Attach to the receiver that is already running and ask it — never
+   * launch one, which would stop whatever is playing. */
+  private castState(screen: Screen): Promise<PlaybackState> {
+    return new Promise((resolve) => {
+      const client = new Client();
+      const done = (s: PlaybackState) => {
+        clearTimeout(timer);
+        try {
+          client.close();
+        } catch {
+          /* already gone */
+        }
+        resolve(s);
+      };
+      const timer = setTimeout(
+        () => done({ state: 'unknown', detail: 'no answer' }),
+        8000,
+      );
+      client.on('error', (e) => done({ state: 'unknown', detail: e.message }));
+      client.connect(screen.address as string, () => {
+        client.getSessions((err, sessions) => {
+          const ours = (sessions ?? []).find((x) => x.appId === 'CC1AD845');
+          if (err || !ours) return done({ state: 'idle' });
+          client.join(ours, DefaultMediaReceiver, (jerr, player) => {
+            if (jerr || !player) return done({ state: 'idle' });
+            player.getStatus((serr, st) => {
+              if (serr || !st) return done({ state: 'idle' });
+              const map: Record<string, PlaybackState['state']> = {
+                PLAYING: 'playing',
+                PAUSED: 'paused',
+                BUFFERING: 'buffering',
+                IDLE: 'stopped',
+              };
+              done({
+                state: map[st.playerState ?? ''] ?? 'unknown',
+                itemId: itemIdFromUrl(st.media?.contentId ?? ''),
+                positionSeconds: Math.floor(st.currentTime ?? 0),
+                durationSeconds: st.media?.duration
+                  ? Math.floor(st.media.duration)
+                  : undefined,
+                detail: st.idleReason,
+              });
+            });
+          });
         });
       });
     });
@@ -663,6 +801,37 @@ export class ScreensService {
 // punctuation and the words that say nothing about which room it is in, so
 // both land on "kids room".
 const NOISE = /^(tv|television|new|old|4k|uhd|hdr|display|screen|the)$/;
+
+/** What a TV is doing right now, as far as it will say. */
+export interface PlaybackState {
+  state: 'playing' | 'paused' | 'buffering' | 'stopped' | 'idle' | 'unknown';
+  /** the Jellyfin item, read from the link being played */
+  itemId?: string;
+  positionSeconds?: number;
+  durationSeconds?: number;
+  detail?: string;
+}
+
+/** The item a link of ours points at, or undefined for anything else. */
+export function itemIdFromUrl(url: string): string | undefined {
+  return /\/media\/stream\/([a-f0-9-]{8,64})/i.exec(url)?.[1];
+}
+
+/** hh:mm:ss, the form UPnP wants a time in */
+export function clock(total: number): string {
+  const s = Math.max(0, Math.floor(total));
+  const hh = String(Math.floor(s / 3600)).padStart(2, '0');
+  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+  const ss = String(s % 60).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+/** Seconds from UPnP's h:mm:ss(.fff), or undefined for NOT_IMPLEMENTED */
+export function seconds(value?: string): number | undefined {
+  const m = /^(\d+):(\d{1,2}):(\d{1,2})/.exec(value ?? '');
+  if (!m) return undefined;
+  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+}
 
 // xml bodies carry a url with an api key on it and a title that may have an
 // ampersand in it, so everything that goes in gets escaped

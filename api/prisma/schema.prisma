@@ -38,6 +38,9 @@ model User {
   displayName   String
   passwordHash  String
   role          Role             @default(CHILD)
+  // the Jellyfin account that is this person — never a room's account.
+  // set by an admin; unset means no personal watch history for them
+  jellyfinUserId String?         @unique
   createdAt     DateTime         @default(now())
   conversations Conversation[]
   images        ImageGeneration[]

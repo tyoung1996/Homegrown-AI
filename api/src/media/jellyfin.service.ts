@@ -14,6 +14,15 @@ const AUTH =
   `MediaBrowser Token="${KEY}", Client="Circuit Barn", ` +
   'Device="server", DeviceId="circuit-barn", Version="1.0"';
 
+// what jellyfin keeps about one person and one item
+export interface JellyfinUserData {
+  PlaybackPositionTicks?: number;
+  PlayedPercentage?: number;
+  PlayCount?: number;
+  Played?: boolean;
+  LastPlayedDate?: string;
+}
+
 // the slice of jellyfin's item shape this app uses
 interface JellyfinItem {
   Id: string;
@@ -27,6 +36,36 @@ interface JellyfinItem {
   MediaSources?: { Container?: string }[];
   ProviderIds?: { Tmdb?: string };
   Path?: string;
+  SeriesId?: string;
+  UserData?: JellyfinUserData;
+}
+
+/** An item as one particular person sees it: what it is, and how far they
+ * are through it. */
+export interface PersonalItem {
+  id: string;
+  name: string;
+  type: string;
+  year?: number;
+  runtimeTicks?: number;
+  seriesId?: string;
+  seriesName?: string;
+  seasonNumber?: number;
+  episodeNumber?: number;
+  container?: string;
+  positionTicks: number;
+  playedPercentage?: number;
+  played: boolean;
+  playCount: number;
+  lastPlayed?: string;
+}
+
+/** Jellyfin's own rules for when a position is worth keeping and when an
+ * item counts as watched. Read from the server, never assumed. */
+export interface ResumeRules {
+  minResumePct: number;
+  maxResumePct: number;
+  minResumeDurationSeconds: number;
 }
 
 export interface LibraryItem {
@@ -55,6 +94,33 @@ interface TmdbSessionRaw {
   Client?: string;
   SupportsRemoteControl?: boolean;
   NowPlayingItem?: { Name?: string };
+}
+
+interface RawSession {
+  Id?: string;
+  DeviceName?: string;
+  DeviceId?: string;
+  Client?: string;
+  UserId?: string;
+  UserName?: string;
+  AdditionalUsers?: { UserId: string }[];
+  SupportsRemoteControl?: boolean;
+  NowPlayingItem?: { Id?: string; Name?: string };
+  PlayState?: { PositionTicks?: number; IsPaused?: boolean };
+}
+
+export interface LiveSession {
+  id: string;
+  deviceName: string;
+  deviceId: string;
+  client: string;
+  userId?: string;
+  userName?: string;
+  additionalUserIds: string[];
+  remoteControl: boolean;
+  nowPlayingId?: string;
+  positionTicks?: number;
+  paused: boolean;
 }
 
 export interface JellyfinSession {
@@ -275,11 +341,56 @@ export class JellyfinService {
   }
 
   /** Tell an open Jellyfin app to start something. */
-  async playOnSession(sessionId: string, itemId: string): Promise<boolean> {
+  async playOnSession(
+    sessionId: string,
+    itemId: string,
+    startTicks = 0,
+  ): Promise<boolean> {
+    const start = startTicks > 0 ? `&startPositionTicks=${startTicks}` : '';
     const res = await this.call(
-      `/Sessions/${sessionId}/Playing?playCommand=PlayNow&itemIds=${itemId}`,
+      `/Sessions/${sessionId}/Playing?playCommand=PlayNow&itemIds=${itemId}${start}`,
       { method: 'POST' },
     );
+    return res !== null;
+  }
+
+  /** Every session, with who is signed in, who has been added, and what is
+   * playing and where — including apps that cannot be remote controlled. */
+  async liveSessions(): Promise<LiveSession[]> {
+    const data = await this.call<RawSession[]>('/Sessions');
+    return (data ?? []).map((s) => ({
+      id: String(s.Id),
+      deviceName: String(s.DeviceName ?? ''),
+      deviceId: String(s.DeviceId ?? ''),
+      client: String(s.Client ?? ''),
+      userId: s.UserId ? String(s.UserId) : undefined,
+      userName: s.UserName ? String(s.UserName) : undefined,
+      additionalUserIds: (s.AdditionalUsers ?? []).map((u) => String(u.UserId)),
+      remoteControl: !!s.SupportsRemoteControl,
+      nowPlayingId: s.NowPlayingItem?.Id
+        ? String(s.NowPlayingItem.Id)
+        : undefined,
+      positionTicks: s.PlayState?.PositionTicks ?? undefined,
+      paused: !!s.PlayState?.IsPaused,
+    }));
+  }
+
+  /** Add a person to a session, so what is watched there counts for them
+   * too. Jellyfin's own mechanism for more than one person watching. */
+  async addUserToSession(sessionId: string, userId: string): Promise<boolean> {
+    const res = await this.call(`/Sessions/${sessionId}/User/${userId}`, {
+      method: 'POST',
+    });
+    return res !== null;
+  }
+
+  async removeUserFromSession(
+    sessionId: string,
+    userId: string,
+  ): Promise<boolean> {
+    const res = await this.call(`/Sessions/${sessionId}/User/${userId}`, {
+      method: 'DELETE',
+    });
     return res !== null;
   }
 
@@ -388,6 +499,163 @@ export class JellyfinService {
       this.log.warn(`poster ${itemId} failed: ${(e as Error).message}`);
       return null;
     }
+  }
+
+  // --------------------------------------------------------- per person
+
+  private personal(i: JellyfinItem): PersonalItem {
+    const d = i.UserData ?? {};
+    return {
+      id: String(i.Id),
+      name: String(i.Name ?? ''),
+      type: String(i.Type ?? ''),
+      year: i.ProductionYear ? Number(i.ProductionYear) : undefined,
+      runtimeTicks: i.RunTimeTicks ? Number(i.RunTimeTicks) : undefined,
+      seriesId: i.SeriesId ? String(i.SeriesId) : undefined,
+      seriesName: i.SeriesName ? String(i.SeriesName) : undefined,
+      seasonNumber: i.ParentIndexNumber ?? undefined,
+      episodeNumber: i.IndexNumber ?? undefined,
+      container: i.MediaSources?.[0]?.Container,
+      positionTicks: Number(d.PlaybackPositionTicks ?? 0),
+      playedPercentage:
+        d.PlayedPercentage != null ? Number(d.PlayedPercentage) : undefined,
+      played: !!d.Played,
+      playCount: Number(d.PlayCount ?? 0),
+      lastPlayed: d.LastPlayedDate ? String(d.LastPlayedDate) : undefined,
+    };
+  }
+
+  private static FIELDS =
+    'UserData,RunTimeTicks,ProductionYear,SeriesName,MediaSources';
+
+  /** Items as one person sees them. */
+  async forPerson(userId: string, ids: string[]): Promise<PersonalItem[]> {
+    if (!ids.length) return [];
+    const q = new URLSearchParams({
+      userId,
+      Ids: ids.join(','),
+      Recursive: 'true',
+      Fields: JellyfinService.FIELDS,
+    });
+    const data = await this.call<{ Items?: JellyfinItem[] }>(`/Items?${q}`);
+    return (data?.Items ?? []).map((i) => this.personal(i));
+  }
+
+  /** What this person has started and not finished, most recent first —
+   * Jellyfin's own Continue Watching. */
+  async resumeFor(
+    userId: string,
+    opts: {
+      parentId?: string;
+      type?: 'Movie' | 'Episode';
+      limit?: number;
+    } = {},
+  ): Promise<PersonalItem[]> {
+    const q = new URLSearchParams({
+      userId,
+      Fields: JellyfinService.FIELDS,
+      enableUserData: 'true',
+      limit: String(opts.limit ?? 20),
+      ...(opts.parentId ? { parentId: opts.parentId } : {}),
+      ...(opts.type ? { includeItemTypes: opts.type } : {}),
+    });
+    const data = await this.call<{ Items?: JellyfinItem[] }>(
+      `/UserItems/Resume?${q}`,
+    );
+    return (data?.Items ?? []).map((i) => this.personal(i));
+  }
+
+  /** What Jellyfin says this person should watch next in a show. Null when
+   * Jellyfin has no answer — which includes a show they have never begun. */
+  async nextUpFor(
+    userId: string,
+    seriesId: string,
+  ): Promise<PersonalItem | null> {
+    const q = new URLSearchParams({
+      userId,
+      seriesId,
+      Fields: JellyfinService.FIELDS,
+      enableUserData: 'true',
+      limit: '1',
+    });
+    const data = await this.call<{ Items?: JellyfinItem[] }>(
+      `/Shows/NextUp?${q}`,
+    );
+    const first = data?.Items?.[0];
+    return first ? this.personal(first) : null;
+  }
+
+  /** Every episode of a show, in order, as this person sees them. */
+  async episodesFor(userId: string, seriesId: string): Promise<PersonalItem[]> {
+    const q = new URLSearchParams({
+      userId,
+      Fields: JellyfinService.FIELDS,
+      enableUserData: 'true',
+    });
+    const data = await this.call<{ Items?: JellyfinItem[] }>(
+      `/Shows/${seriesId}/Episodes?${q}`,
+    );
+    return (data?.Items ?? []).map((i) => this.personal(i));
+  }
+
+  /** What this person watched or started most recently, newest first. */
+  async recentFor(userId: string, limit = 10): Promise<PersonalItem[]> {
+    const q = new URLSearchParams({
+      userId,
+      Recursive: 'true',
+      IncludeItemTypes: 'Movie,Episode',
+      SortBy: 'DatePlayed',
+      SortOrder: 'Descending',
+      Filters: 'IsPlayed',
+      Fields: JellyfinService.FIELDS,
+      Limit: String(limit),
+    });
+    const played = await this.call<{ Items?: JellyfinItem[] }>(`/Items?${q}`);
+    const started = await this.resumeFor(userId, { limit });
+    const all = [
+      ...(played?.Items ?? []).map((i) => this.personal(i)),
+      ...started,
+    ];
+    const seen = new Set<string>();
+    return all
+      .filter((i) => i.lastPlayed && !seen.has(i.id) && seen.add(i.id))
+      .sort((a, b) => (b.lastPlayed ?? '').localeCompare(a.lastPlayed ?? ''))
+      .slice(0, limit);
+  }
+
+  private rules: { at: number; value: ResumeRules } | null = null;
+
+  /** Jellyfin's resume rules, cached for a few minutes. Falls back to
+   * Jellyfin's own defaults only if the server cannot be asked. */
+  async resumeRules(): Promise<ResumeRules> {
+    if (this.rules && Date.now() - this.rules.at < 5 * 60_000) {
+      return this.rules.value;
+    }
+    const c = await this.call<{
+      MinResumePct?: number;
+      MaxResumePct?: number;
+      MinResumeDurationSeconds?: number;
+    }>('/System/Configuration');
+    const value: ResumeRules = {
+      minResumePct: Number(c?.MinResumePct ?? 5),
+      maxResumePct: Number(c?.MaxResumePct ?? 90),
+      minResumeDurationSeconds: Number(c?.MinResumeDurationSeconds ?? 300),
+    };
+    if (c) this.rules = { at: Date.now(), value };
+    return value;
+  }
+
+  /** Every Jellyfin account — for an admin choosing who is who. */
+  async accounts(): Promise<{ id: string; name: string; admin: boolean }[]> {
+    const users =
+      await this.call<
+        { Id: string; Name: string; Policy?: { IsAdministrator?: boolean } }[]
+      >('/Users');
+    return (users ?? []).map((u) => ({
+      id: String(u.Id),
+      name: String(u.Name),
+      admin: !!u.Policy?.IsAdministrator,
+    }));
   }
 
   /** Ask Jellyfin to rescan, so something just imported shows up. */

@@ -2,8 +2,16 @@
 declare module 'castv2-client' {
   interface MediaStatus {
     playerState?: string;
+    idleReason?: string;
     currentTime?: number;
-    media?: { duration?: number };
+    media?: { contentId?: string; duration?: number };
+  }
+
+  interface ReceiverSession {
+    appId: string;
+    displayName?: string;
+    sessionId: string;
+    transportId: string;
   }
 
   export class DefaultMediaReceiver {
@@ -27,7 +35,13 @@ declare module 'castv2-client' {
       callback: (err: Error | null, player: DefaultMediaReceiver) => void,
     ): void;
     getSessions(
-      callback: (err: Error | null, sessions: unknown[]) => void,
+      callback: (err: Error | null, sessions: ReceiverSession[]) => void,
+    ): void;
+    /** attach to an app that is already running, without restarting it */
+    join(
+      session: ReceiverSession,
+      app: typeof DefaultMediaReceiver,
+      callback: (err: Error | null, player: DefaultMediaReceiver) => void,
     ): void;
     setVolume(
       volume: { level?: number; muted?: boolean },

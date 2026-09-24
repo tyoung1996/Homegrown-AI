@@ -540,3 +540,173 @@ describe('ScreensService playing on a TV that speaks UPnP', () => {
     expect(sent[0].action).toBe('Stop"');
   });
 });
+
+describe('starting part way through, and reading back what is on', () => {
+  const REAL = global.fetch;
+  afterEach(() => {
+    global.fetch = REAL;
+  });
+  const tv = {
+    id: 'dlna:10.0.0.15',
+    name: 'Living room',
+    kind: 'dlna' as const,
+    address: '10.0.0.15',
+    control: '/upnp/control/AVTransport1',
+    ready: false,
+  };
+  const envelope = (inner: string) =>
+    `<?xml version="1.0"?><s:Envelope><s:Body>${inner}</s:Body></s:Envelope>`;
+
+  /** a pretend UPnP TV: it answers each action, and says it is playing
+   * only after a moment, as a real set does */
+  function renderer(
+    opts: {
+      playingAfter?: number;
+      uri?: string;
+      rel?: string;
+      transport?: string;
+    } = {},
+  ) {
+    const actions: { action: string; body: string }[] = [];
+    let polls = 0;
+    global.fetch = jest.fn(async (_url: any, init: any) => {
+      const action =
+        String(init?.headers?.soapaction ?? '')
+          .split('#')[1]
+          ?.replace('"', '') ?? '';
+      actions.push({ action, body: String(init?.body ?? '') });
+      let reply = '';
+      if (action === 'GetTransportInfo') {
+        polls++;
+        const state =
+          opts.transport ??
+          (polls > (opts.playingAfter ?? 0) ? 'PLAYING' : 'TRANSITIONING');
+        reply = `<CurrentTransportState>${state}</CurrentTransportState>`;
+      }
+      if (action === 'GetPositionInfo') {
+        reply =
+          `<TrackURI>${(opts.uri ?? '').replace(/&/g, '&amp;')}</TrackURI>` +
+          `<RelTime>${opts.rel ?? '0:40:00'}</RelTime><TrackDuration>1:36:03</TrackDuration>`;
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => envelope(reply),
+      } as any;
+    }) as any;
+    return actions;
+  }
+
+  it('starts from the beginning without seeking at all', async () => {
+    const { service } = build({});
+    const actions = renderer();
+
+    await service.play(tv, { id: 'm1', name: 'Encanto' });
+
+    expect(actions.map((a) => a.action)).toEqual(['SetAVTransportURI', 'Play']);
+  });
+
+  it('waits for the TV to be playing, then seeks to the saved point', async () => {
+    const { service } = build({});
+    const actions = renderer({ playingAfter: 2 });
+
+    await service.play(tv, { id: 'm1', name: 'Encanto' }, 2400);
+
+    const names = actions.map((a) => a.action);
+    expect(names.slice(0, 2)).toEqual(['SetAVTransportURI', 'Play']);
+    // it asked until the TV said it was playing, and only then moved
+    expect(
+      names.filter((n) => n === 'GetTransportInfo').length,
+    ).toBeGreaterThanOrEqual(3);
+    const seek = actions.find((a) => a.action === 'Seek')!;
+    expect(seek.body).toContain('<Unit>REL_TIME</Unit>');
+    expect(seek.body).toContain('<Target>00:40:00</Target>');
+    expect(names.indexOf('Seek')).toBe(names.length - 1);
+  }, 20000);
+
+  it('knows which film is on from the link it is playing', async () => {
+    const { service } = build({});
+    renderer({
+      uri: 'http://10.0.0.2:3001/api/media/stream/abc123def456?t=sig',
+      rel: '0:40:00',
+    });
+
+    const now = await service.nowPlaying(tv);
+
+    expect(now).toMatchObject({
+      state: 'playing',
+      itemId: 'abc123def456',
+      positionSeconds: 2400,
+      durationSeconds: 5763,
+    });
+  });
+
+  it('sees a different film as a different film', async () => {
+    const { service } = build({});
+    renderer({
+      uri: 'http://10.0.0.2:3001/api/media/stream/ffff0000ffff?t=sig',
+    });
+
+    const now = await service.nowPlaying(tv);
+
+    // someone put something else on: this must not read as the first film
+    expect(now.itemId).toBe('ffff0000ffff');
+    expect(now.itemId).not.toBe('abc123def456');
+  });
+
+  it('does not claim to know the film when the TV is playing something that is not ours', async () => {
+    const { service } = build({});
+    renderer({ uri: 'http://youtube.example/watch?v=x' });
+
+    expect((await service.nowPlaying(tv)).itemId).toBeUndefined();
+  });
+
+  it('reads a stopped TV as stopped', async () => {
+    const { service } = build({});
+    renderer({ transport: 'STOPPED', uri: '' });
+
+    expect((await service.nowPlaying(tv)).state).toBe('stopped');
+  });
+
+  it('asks a Jellyfin app to start at the saved point', async () => {
+    const { service, jellyfin } = build({
+      sessions: [session('s1', 'Den TV')],
+    });
+    jellyfin.playOnSession = jest.fn(async () => true);
+    const den = (await service.list())[0];
+
+    await service.play(den, { id: 'm1', name: 'Encanto' }, 90);
+
+    expect(jellyfin.playOnSession).toHaveBeenCalledWith(
+      's1',
+      'm1',
+      900_000_000,
+    );
+  });
+});
+
+describe('the small conversions', () => {
+  const { clock, seconds, itemIdFromUrl } = require('./screens.service');
+
+  it('writes a time the way UPnP wants it', () => {
+    expect(clock(0)).toBe('00:00:00');
+    expect(clock(2400)).toBe('00:40:00');
+    expect(clock(5763)).toBe('01:36:03');
+  });
+
+  it('reads UPnP times, and gives up on ones it cannot read', () => {
+    expect(seconds('0:40:00')).toBe(2400);
+    expect(seconds('1:36:03.000')).toBe(5763);
+    expect(seconds('NOT_IMPLEMENTED')).toBeUndefined();
+    expect(seconds(undefined)).toBeUndefined();
+  });
+
+  it('finds the item only in links that are ours', () => {
+    expect(
+      itemIdFromUrl('http://x/api/media/stream/94a4f867104ea527?t=abc'),
+    ).toBe('94a4f867104ea527');
+    expect(
+      itemIdFromUrl('http://x/Videos/94a4f867104ea527/stream'),
+    ).toBeUndefined();
+  });
+});

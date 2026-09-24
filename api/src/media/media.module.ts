@@ -5,6 +5,7 @@ import { MediaController } from './media.controller';
 import { MediaService } from './media.service';
 import { CatalogService } from './catalog.service';
 import { AvailabilityService } from './availability.service';
+import { WatchStateService } from './watch-state.service';
 import { JellyfinService } from './jellyfin.service';
 import { ScreensService } from './screens.service';
 import { LibraryImportService } from './library-import.service';
@@ -24,6 +25,7 @@ import { PrismaService } from '../prisma.service';
     CatalogService,
     JellyfinService,
     AvailabilityService,
+    WatchStateService,
     ScreensService,
     LibraryImportService,
     DropFolderSource,
@@ -47,6 +49,7 @@ import { PrismaService } from '../prisma.service';
     CatalogService,
     JellyfinService,
     AvailabilityService,
+    WatchStateService,
     ScreensService,
   ],
 })
