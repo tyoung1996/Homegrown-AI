@@ -190,6 +190,24 @@ export class MediaController {
     return this.media.list(req.user.userId, all !== 'false', req.user.role);
   }
 
+  /** What the signed-in person asked for that is now ready to watch and
+   * they have not been told about yet. */
+  @Get('requests/ready')
+  ready(@Req() req: AuthedRequest) {
+    return this.media.newlyReady(req.user.userId);
+  }
+
+  /** They have seen it: stop telling them. Only ever their own. */
+  @Post('requests/ready/seen')
+  readySeen(@Req() req: AuthedRequest, @Body() body: { ids?: unknown }) {
+    const ids = Array.isArray(body.ids)
+      ? body.ids.filter((x): x is string => typeof x === 'string')
+      : undefined;
+    return this.media
+      .markReadySeen(req.user.userId, ids)
+      .then((marked) => ({ ok: true, marked }));
+  }
+
   @Get('requests/:id')
   one(@Req() req: AuthedRequest, @Param('id') id: string) {
     return this.media.get(id, req.user.userId, req.user.role);

@@ -25,6 +25,7 @@ import {
 import { parseEpisodeRef, titleGuesses, titleOf } from './query';
 import { StorageHealth, storageHealth } from './storage';
 import { titlesMatch } from './filename';
+import { requestLine } from './request-words';
 
 // what the family sees for each stage — no jargon anywhere in here
 const STATUS_TEXT: Record<MediaStatus, string> = {
@@ -57,6 +58,10 @@ export interface MediaRequestView {
   status: MediaStatus;
   statusText: string;
   statusNote: string | null;
+  /** 0-100 while acquiring, only when a source measured it */
+  progress: number | null;
+  /** one plain sentence: "Harbour Lights is downloading — about 63% complete." */
+  line: string;
   /** only ever present for an admin */
   adminNote?: string;
   requestedBy: string;
@@ -592,6 +597,7 @@ export class MediaService {
         statusNote: outcome.note,
         source,
         adminNote: adminNote ?? outcome.detail ?? null,
+        progress: outcome.progress ?? null,
         ...(retryAfter !== undefined ? { retryAfter } : {}),
         ...(outcome.ref ? { sourceRef: outcome.ref } : {}),
       },
@@ -750,7 +756,17 @@ export class MediaService {
       const source = this.sources.byName(row.source);
       if (!source?.poll) continue;
       const result = await this.sources.pollFor(source, row);
-      if (!result || result.status === row.status) continue;
+      if (!result) continue;
+      if (result.status === row.status) {
+        // same stage, further along: only the measured progress moves
+        if (result.progress != null && result.progress !== row.progress) {
+          await this.prisma.mediaRequest.update({
+            where: { id: row.id },
+            data: { progress: result.progress },
+          });
+        }
+        continue;
+      }
 
       if (result.status === MediaStatus.UNAVAILABLE) {
         const failed = `${source.name} failed: ${result.detail ?? result.note}`;
@@ -986,6 +1002,41 @@ export class MediaService {
    * watch: a file on disk, or any provider reporting itself finished, is not
    * evidence that it can be played.
    */
+  /** What this person asked for that is still on its way. */
+  async waiting(userId: string): Promise<MediaRequestView[]> {
+    const rows = await this.prisma.mediaRequest.findMany({
+      where: { userId, status: { in: OPEN_STATUSES } },
+      orderBy: { createdAt: 'asc' },
+      include: { user: { select: { displayName: true } } },
+    });
+    return rows.map((r) => this.view(r, userId));
+  }
+
+  /** What this person asked for that has become ready since they were last
+   * told — ready meaning Jellyfin has it, never less. */
+  async newlyReady(userId: string): Promise<MediaRequestView[]> {
+    const rows = await this.prisma.mediaRequest.findMany({
+      where: { userId, status: MediaStatus.AVAILABLE, readySeenAt: null },
+      orderBy: { updatedAt: 'desc' },
+      include: { user: { select: { displayName: true } } },
+    });
+    return rows.map((r) => this.view(r, userId));
+  }
+
+  /** They have been told: don't tell them again. Only their own. */
+  async markReadySeen(userId: string, ids?: string[]): Promise<number> {
+    const done = await this.prisma.mediaRequest.updateMany({
+      where: {
+        userId,
+        status: MediaStatus.AVAILABLE,
+        readySeenAt: null,
+        ...(ids?.length ? { id: { in: ids } } : {}),
+      },
+      data: { readySeenAt: new Date() },
+    });
+    return done.count;
+  }
+
   async confirmImported(): Promise<MediaRequestView[]> {
     const waiting = await this.prisma.mediaRequest.findMany({
       where: { status: MediaStatus.IMPORTING },
@@ -1001,6 +1052,9 @@ export class MediaService {
           status: MediaStatus.AVAILABLE,
           statusNote: FAMILY_NOTE.ready,
           jellyfinId: seen,
+          progress: null,
+          // the person who asked has not been told yet
+          readySeenAt: null,
         },
         include: { user: { select: { displayName: true } } },
       });
@@ -1064,6 +1118,13 @@ export class MediaService {
       status: row.status,
       statusText: STATUS_TEXT[row.status],
       statusNote: row.statusNote,
+      progress:
+        row.status === MediaStatus.ACQUIRING ? (row.progress ?? null) : null,
+      line: requestLine({
+        ...row,
+        progress:
+          row.status === MediaStatus.ACQUIRING ? (row.progress ?? null) : null,
+      }),
       // the technical why never leaves the admin panel
       ...(role === Role.ADMIN && row.adminNote
         ? { adminNote: row.adminNote }

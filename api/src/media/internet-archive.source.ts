@@ -511,7 +511,15 @@ export class InternetArchiveSource implements AcquisitionSource {
       return { status: MediaStatus.IMPORTING, note: FAMILY_NOTE.almost };
     }
 
-    if (this.running.has(key)) return null;
+    // still coming in: say how far, from the bytes actually received
+    if (this.running.has(key)) {
+      if (!job || !(job.total > 0)) return null;
+      return {
+        status: MediaStatus.ACQUIRING,
+        note: FAMILY_NOTE.adding,
+        progress: Math.min(99, Math.floor((job.received / job.total) * 100)),
+      };
+    }
 
     // nothing running: either never started or the process restarted.
     // a .part from before is not trusted; the download starts again

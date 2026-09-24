@@ -44,6 +44,7 @@ function build(
     {} as never,
     {} as never,
     actions as never,
+    {} as never,
   );
   const events: StreamEvent[] = [];
   const send = (message: string) =>

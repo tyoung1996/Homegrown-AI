@@ -161,6 +161,8 @@ model MediaRequest {
   statusNote    String?     // one plain line for the family
   adminNote     String?     // the technical why, for the admin panel only
   retryAfter    DateTime?   // when an automatic provider may be asked again
+  progress      Int? // how far a source has got, 0-100 — only when it actually measured it
+  readySeenAt   DateTime? // when the person who asked was told it is ready
   source        String?     // which acquisition provider picked it up
   sourceRef     String?     // that provider's own id for it, for correlation
   filePath      String?     // where it ended up in the library

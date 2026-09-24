@@ -38,6 +38,11 @@ interface JellyfinItem {
   Path?: string;
   SeriesId?: string;
   UserData?: JellyfinUserData;
+  Genres?: string[];
+  OfficialRating?: string;
+  CommunityRating?: number;
+  Overview?: string;
+  People?: { Name?: string; Type?: string }[];
 }
 
 /** An item as one particular person sees it: what it is, and how far they
@@ -57,6 +62,30 @@ export interface PersonalItem {
   playedPercentage?: number;
   played: boolean;
   playCount: number;
+  lastPlayed?: string;
+}
+
+/** A film or show on the shelf, with what a recommendation needs to know
+ * about it — and, when asked for one person, whether they have seen it. */
+export interface LibraryEntry {
+  id: string;
+  name: string;
+  type: 'Movie' | 'Series';
+  year?: number;
+  genres: string[];
+  /** the audience rating, 0-10, when Jellyfin has one */
+  rating?: number;
+  /** the certificate: "PG-13", "TV-Y7", "R" */
+  certificate?: string;
+  /** a film's length, or a show's usual episode length */
+  runtimeMinutes?: number;
+  catalogId?: number;
+  directors: string[];
+  overview?: string;
+  /** this person has finished it */
+  played: boolean;
+  /** this person is part way through it */
+  started: boolean;
   lastPlayed?: string;
 }
 
@@ -505,6 +534,47 @@ export class JellyfinService {
       this.log.warn(`poster ${itemId} failed: ${(e as Error).message}`);
       return null;
     }
+  }
+
+  /** Every film and show, with genres, certificate, rating and length —
+   * and, given a person, whether they have seen each one. Never anyone
+   * else's viewing: with no person, nothing is marked seen. */
+  async libraryFor(userId: string | null): Promise<LibraryEntry[]> {
+    const q = new URLSearchParams({
+      Recursive: 'true',
+      IncludeItemTypes: 'Movie,Series',
+      Fields:
+        'Genres,OfficialRating,CommunityRating,RunTimeTicks,ProductionYear,ProviderIds,Overview,People',
+      EnableImages: 'false',
+      Limit: '5000',
+      ...(userId ? { userId, enableUserData: 'true' } : {}),
+    });
+    const data = await this.call<{ Items?: JellyfinItem[] }>(`/Items?${q}`);
+    return (data?.Items ?? []).map((i) => {
+      const d = userId ? (i.UserData ?? {}) : {};
+      return {
+        id: String(i.Id),
+        name: String(i.Name ?? ''),
+        type: i.Type === 'Series' ? ('Series' as const) : ('Movie' as const),
+        year: i.ProductionYear ? Number(i.ProductionYear) : undefined,
+        genres: (i.Genres ?? []).map(String),
+        rating:
+          typeof i.CommunityRating === 'number' ? i.CommunityRating : undefined,
+        certificate: i.OfficialRating ? String(i.OfficialRating) : undefined,
+        runtimeMinutes: i.RunTimeTicks
+          ? Math.round(Number(i.RunTimeTicks) / 600_000_000)
+          : undefined,
+        catalogId: i.ProviderIds?.Tmdb ? Number(i.ProviderIds.Tmdb) : undefined,
+        directors: (i.People ?? [])
+          .filter((p) => p.Type === 'Director' && p.Name)
+          .map((p) => String(p.Name))
+          .slice(0, 3),
+        overview: i.Overview ? String(i.Overview) : undefined,
+        played: !!d.Played,
+        started: !d.Played && Number(d.PlaybackPositionTicks ?? 0) > 0,
+        lastPlayed: d.LastPlayedDate ? String(d.LastPlayedDate) : undefined,
+      };
+    });
   }
 
   // --------------------------------------------------------- per person

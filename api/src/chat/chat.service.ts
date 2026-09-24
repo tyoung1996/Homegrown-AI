@@ -14,6 +14,7 @@ import { CalendarService } from './calendar.service';
 import { MediaService, MediaRequestView } from '../media/media.service';
 import { stopReply } from './actions/stop.action';
 import { VerifiedActions } from './actions/verified-action';
+import { RecommendService, readAsk } from '../media/recommend.service';
 import { WatchingService } from '../media/watching.service';
 import { savePhoto } from './photos';
 
@@ -37,6 +38,7 @@ const WATCH_TOOL_NAMES = [
   'what_was_i_watching',
   'how_far_into',
   'play_show',
+  'recommend',
 ];
 
 export type StreamEvent =
@@ -213,6 +215,7 @@ export class ChatService {
     private media: MediaService,
     private watching: WatchingService,
     private actions: VerifiedActions,
+    private recommend: RecommendService,
   ) {}
 
   listConversations(userId: string) {
@@ -830,10 +833,61 @@ export class ChatService {
               ? JSON.stringify(
                   rows.map((r) => ({
                     item: r.label,
-                    status: r.statusText,
+                    status: r.line,
+                    askedBy: r.mine ? 'you' : r.requestedBy,
                   })),
-                )
+                ) +
+                ' — give each status in these words. Never add a ' +
+                'percentage or a time that is not here.'
               : 'Nothing is on the library list right now.';
+          } else if (name === 'recommend') {
+            emit({
+              type: 'status',
+              text: 'Thinking about what you might like',
+            });
+            try {
+              const got = await this.recommend.recommend(
+                userId,
+                readAsk(args as Record<string, unknown>),
+              );
+              result =
+                got.availableNow.length || got.notInLibrary.length
+                  ? JSON.stringify(got) +
+                    ' — availableNow is in the library and can be played ' +
+                    'now: offer those first. notInLibrary is NOT in the ' +
+                    'library: say so plainly for each one you mention, and ' +
+                    'ask if they would like it added (or say it is already ' +
+                    'on the list if alreadyRequested). Do NOT add anything ' +
+                    'unless they then ask. Never mention ids.' +
+                    (got.linked
+                      ? ''
+                      : ' Their viewing is not linked to them, so do not ' +
+                        'claim to know what they have watched.')
+                  : 'Nothing in the library fits that. Say so, and offer ' +
+                    'to look for something new.';
+            } catch (e) {
+              result = `Could not come up with suggestions: ${(e as Error).message}`;
+            }
+          } else if (name === 'what_am_i_waiting_for') {
+            emit({ type: 'status', text: 'Checking what you asked for' });
+            const [waiting, ready] = await Promise.all([
+              this.media.waiting(userId),
+              this.media.newlyReady(userId),
+            ]);
+            await this.media.markReadySeen(
+              userId,
+              ready.map((r) => r.id),
+            );
+            result =
+              waiting.length || ready.length
+                ? JSON.stringify({
+                    readyNow: ready.map((r) => r.line),
+                    stillComing: waiting.map((r) => r.line),
+                  }) +
+                  ' — tell them in these words, ready ones first. Never ' +
+                  'add a percentage or a time that is not here.'
+                : 'They are not waiting for anything — nothing they asked ' +
+                  'for is still on its way.';
           } else if (name === 'remember') {
             emit({ type: 'status', text: 'Saving that to memory' });
             await this.prisma.memory.create({
@@ -1206,6 +1260,23 @@ export class ChatService {
       prompt += `\n\nRecent conversations with ${name}:\n${recent
         .map((c) => `- ${c.updatedAt.toDateString()}: ${c.summary}`)
         .join('\n')}`;
+    }
+    // something they asked for became ready since they were last told:
+    // pass it on once. ready is Jellyfin's word, so this is only real news
+    const ready = await this.media
+      .newlyReady(userId)
+      .catch((): MediaRequestView[] => []);
+    if (ready.length) {
+      prompt += `\n\nGood news to pass on to ${name} once, briefly, before anything else: ${ready
+        .slice(0, 5)
+        .map((r) => r.line)
+        .join(' ')}`;
+      await this.media
+        .markReadySeen(
+          userId,
+          ready.map((r) => r.id),
+        )
+        .catch(() => 0);
     }
     return prompt;
   }

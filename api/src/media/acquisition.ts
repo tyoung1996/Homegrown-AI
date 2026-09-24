@@ -58,6 +58,9 @@ export interface ProviderResult {
   /** what actually went wrong, for the admin panel. never shown to the
    * family, and never needed to be — the note is for them */
   detail?: string;
+  /** how far it has got, 0-100, while acquiring — only when the source
+   * really measured it. left out rather than guessed */
+  progress?: number;
 }
 
 export interface ProviderHealth {

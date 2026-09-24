@@ -18,6 +18,26 @@ export interface CatalogItem {
   kind: 'movie' | 'series';
 }
 
+/** Something the catalogue suggests, with enough to judge it by. */
+export interface CatalogPick extends CatalogItem {
+  genres: string[];
+  rating?: number;
+  votes?: number;
+}
+
+interface TmdbListItem {
+  id: number;
+  title?: string;
+  name?: string;
+  release_date?: string;
+  first_air_date?: string;
+  overview?: string;
+  poster_path?: string | null;
+  genre_ids?: number[];
+  vote_average?: number;
+  vote_count?: number;
+}
+
 export interface CatalogSeason {
   seasonNumber: number;
   name: string;
@@ -157,6 +177,99 @@ export class CatalogService {
         kind: 'series' as const,
       }))
       .slice(0, limit);
+  }
+
+  private genreNames: Partial<Record<'movie' | 'tv', Map<number, string>>> = {};
+
+  /** The catalogue's genre list, fetched once. */
+  private async genres(kind: 'movie' | 'tv'): Promise<Map<number, string>> {
+    const known = this.genreNames[kind];
+    if (known) return known;
+    const r = await this.get<{ genres?: { id: number; name: string }[] }>(
+      `/genre/${kind}/list`,
+    );
+    const map = new Map((r.genres ?? []).map((g) => [g.id, g.name]));
+    this.genreNames[kind] = map;
+    return map;
+  }
+
+  /** The catalogue id for a genre name ("Comedy", "Science Fiction"). */
+  async genreId(
+    kind: 'movie' | 'series',
+    name: string,
+  ): Promise<number | null> {
+    const map = await this.genres(kind === 'movie' ? 'movie' : 'tv');
+    const want = name.toLowerCase();
+    for (const [id, n] of map) if (n.toLowerCase() === want) return id;
+    return null;
+  }
+
+  private async picks(
+    kind: 'movie' | 'series',
+    items: TmdbListItem[],
+  ): Promise<CatalogPick[]> {
+    const names = await this.genres(kind === 'movie' ? 'movie' : 'tv');
+    return items.map((r) => ({
+      catalogId: Number(r.id),
+      title: String(r.title ?? r.name ?? 'Untitled'),
+      year: yearOf(r.release_date ?? r.first_air_date),
+      overview: r.overview ? String(r.overview) : undefined,
+      posterUrl: r.poster_path ? IMAGES + String(r.poster_path) : undefined,
+      kind,
+      genres: (r.genre_ids ?? [])
+        .map((g) => names.get(g))
+        .filter((g): g is string => !!g),
+      rating: typeof r.vote_average === 'number' ? r.vote_average : undefined,
+      votes: typeof r.vote_count === 'number' ? r.vote_count : undefined,
+    }));
+  }
+
+  /** What the catalogue recommends to people who liked this one. */
+  async recommendedWith(
+    kind: 'movie' | 'series',
+    catalogId: number,
+  ): Promise<CatalogPick[]> {
+    const r = await this.get<{ results?: TmdbListItem[] }>(
+      `/${kind === 'movie' ? 'movie' : 'tv'}/${catalogId}/recommendations`,
+    );
+    return this.picks(kind, (r.results ?? []).slice(0, 20));
+  }
+
+  /** The genres the catalogue gives one title. */
+  async genresOf(
+    kind: 'movie' | 'series',
+    catalogId: number,
+  ): Promise<string[]> {
+    const r = await this.get<{ genres?: { name?: string }[] }>(
+      `/${kind === 'movie' ? 'movie' : 'tv'}/${catalogId}`,
+    );
+    return (r.genres ?? []).map((g) => String(g.name ?? '')).filter(Boolean);
+  }
+
+  /** Well-liked films or shows in some genres, optionally no longer than a
+   * length and no stronger than a family certificate (US ratings). */
+  async discover(
+    kind: 'movie' | 'series',
+    opts: { genreIds?: number[]; maxMinutes?: number; family?: boolean },
+  ): Promise<CatalogPick[]> {
+    const params: Record<string, string> = {
+      sort_by: 'vote_average.desc',
+      'vote_count.gte': kind === 'movie' ? '500' : '200',
+      include_adult: 'false',
+    };
+    if (opts.genreIds?.length) params.with_genres = opts.genreIds.join('|');
+    if (opts.maxMinutes && kind === 'movie') {
+      params['with_runtime.lte'] = String(opts.maxMinutes);
+    }
+    if (opts.family && kind === 'movie') {
+      params.certification_country = 'US';
+      params['certification.lte'] = 'PG';
+    }
+    const r = await this.get<{ results?: TmdbListItem[] }>(
+      `/discover/${kind === 'movie' ? 'movie' : 'tv'}`,
+      params,
+    );
+    return this.picks(kind, (r.results ?? []).slice(0, 20));
   }
 
   async movie(catalogId: number): Promise<CatalogItem> {

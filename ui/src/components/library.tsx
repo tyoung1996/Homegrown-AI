@@ -1,6 +1,6 @@
-'use client';
+"use client";
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState } from "react";
 import {
   MediaPicker,
   Picker,
@@ -8,7 +8,7 @@ import {
   statusTone,
   useRequests,
   posterSrc,
-} from './media-picker';
+} from "./media-picker";
 
 async function api(
   path: string,
@@ -18,7 +18,7 @@ async function api(
   const res = await fetch(`/api${path}`, {
     ...opts,
     headers: {
-      'content-type': 'application/json',
+      "content-type": "application/json",
       ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
   });
@@ -38,7 +38,7 @@ type Health = {
   ready: boolean;
 };
 
-const OPEN = ['REQUESTED', 'SEARCHING', 'ACQUIRING', 'IMPORTING'];
+const OPEN = ["REQUESTED", "SEARCHING", "ACQUIRING", "IMPORTING"];
 
 export function Library({
   token,
@@ -47,16 +47,34 @@ export function Library({
   token: string;
   isAdmin: boolean;
 }) {
-  const [kind, setKind] = useState<'movies' | 'series'>('movies');
-  const [query, setQuery] = useState('');
+  const [kind, setKind] = useState<"movies" | "series">("movies");
+  const [query, setQuery] = useState("");
   const [picker, setPicker] = useState<Picker | null>(null);
   const [searching, setSearching] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
   const [health, setHealth] = useState<Health | null>(null);
   const { rows, refresh } = useRequests(token);
+  // what this person asked for that has just become ready to watch
+  const [justReady, setJustReady] = useState<RequestRow[]>([]);
 
   useEffect(() => {
-    api('/media/health', {}, token)
+    api("/media/requests/ready", {}, token)
+      .then(setJustReady)
+      .catch(() => {});
+  }, [token]);
+
+  async function gotIt() {
+    const ids = justReady.map((r) => r.id);
+    setJustReady([]);
+    await api(
+      "/media/requests/ready/seen",
+      { method: "POST", body: JSON.stringify({ ids }) },
+      token,
+    ).catch(() => {});
+  }
+
+  useEffect(() => {
+    api("/media/health", {}, token)
       .then(setHealth)
       .catch(() => {});
   }, [token]);
@@ -66,11 +84,11 @@ export function Library({
     const q = query.trim();
     if (q.length < 2) return;
     setSearching(true);
-    setError('');
+    setError("");
     setPicker(null);
     try {
       const items = await api(
-        `/media/search?q=${encodeURIComponent(q)}&type=${kind === 'series' ? 'series' : 'movie'}`,
+        `/media/search?q=${encodeURIComponent(q)}&type=${kind === "series" ? "series" : "movie"}`,
         {},
         token,
       );
@@ -85,7 +103,7 @@ export function Library({
   async function cancel(r: RequestRow) {
     if (!confirm(`Take “${r.label}” off the list?`)) return;
     try {
-      await api(`/media/requests/${r.id}`, { method: 'DELETE' }, token);
+      await api(`/media/requests/${r.id}`, { method: "DELETE" }, token);
       refresh();
     } catch (e: any) {
       setError(e.message);
@@ -93,13 +111,13 @@ export function Library({
   }
 
   async function scan() {
-    setError('');
+    setError("");
     try {
-      const r = await api('/media/scan', { method: 'POST' }, token);
+      const r = await api("/media/scan", { method: "POST" }, token);
       setError(
         r.imported?.length
-          ? `Added ${r.imported.length} file${r.imported.length === 1 ? '' : 's'} to the library`
-          : 'Nothing new in the drop folder',
+          ? `Added ${r.imported.length} file${r.imported.length === 1 ? "" : "s"} to the library`
+          : "Nothing new in the drop folder",
       );
       refresh();
     } catch (e: any) {
@@ -108,9 +126,9 @@ export function Library({
   }
 
   const waiting = rows.filter((r) => OPEN.includes(r.status));
-  const ready = rows.filter((r) => r.status === 'AVAILABLE');
+  const ready = rows.filter((r) => r.status === "AVAILABLE");
   const closed = rows.filter(
-    (r) => r.status === 'UNAVAILABLE' || r.status === 'CANCELLED',
+    (r) => r.status === "UNAVAILABLE" || r.status === "CANCELLED",
   );
 
   return (
@@ -146,18 +164,18 @@ export function Library({
 
         <form onSubmit={search} className="mb-6 flex flex-wrap gap-2">
           <div className="flex overflow-hidden rounded-md border border-line">
-            {(['movies', 'series'] as const).map((k) => (
+            {(["movies", "series"] as const).map((k) => (
               <button
                 key={k}
                 type="button"
                 onClick={() => setKind(k)}
                 className={`px-3 py-2 text-sm ${
                   kind === k
-                    ? 'bg-card text-ink'
-                    : 'text-ink-2 hover:bg-card/60'
+                    ? "bg-card text-ink"
+                    : "text-ink-2 hover:bg-card/60"
                 }`}
               >
-                {k === 'movies' ? 'Films' : 'Shows'}
+                {k === "movies" ? "Films" : "Shows"}
               </button>
             ))}
           </div>
@@ -165,7 +183,7 @@ export function Library({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={
-              kind === 'movies' ? 'Search for a film…' : 'Search for a show…'
+              kind === "movies" ? "Search for a film…" : "Search for a show…"
             }
             className="field min-w-0 flex-1"
           />
@@ -173,9 +191,24 @@ export function Library({
             disabled={searching || query.trim().length < 2}
             className="btn shrink-0"
           >
-            {searching ? 'Looking…' : 'Search'}
+            {searching ? "Looking…" : "Search"}
           </button>
         </form>
+
+        {justReady.length > 0 && (
+          <div className="card mb-5 flex items-center gap-3 border-sage/50 p-3 text-sm">
+            <div className="min-w-0 flex-1">
+              {justReady.slice(0, 5).map((r) => (
+                <p key={r.id} className="font-medium text-sage">
+                  {r.line ?? `${r.label} is ready to watch.`}
+                </p>
+              ))}
+            </div>
+            <button onClick={gotIt} className="btn-ghost !py-1 text-xs">
+              Got it
+            </button>
+          </div>
+        )}
 
         {error && <p className="mb-4 text-sm text-red">{error}</p>}
 
@@ -251,8 +284,22 @@ function Row({ row, onCancel }: { row: RequestRow; onCancel?: () => void }) {
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium">{row.label}</p>
         <p className="truncate text-xs text-ink-2">
-          {row.statusNote ?? `Asked for by ${row.requestedBy}`}
+          {row.line ?? row.statusNote ?? `Asked for by ${row.requestedBy}`}
         </p>
+        {typeof row.progress === "number" && (
+          <div
+            className="mt-1.5 h-1 overflow-hidden rounded bg-line"
+            role="progressbar"
+            aria-valuenow={row.progress}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <div
+              className="h-full bg-sage"
+              style={{ width: `${Math.max(2, Math.min(100, row.progress))}%` }}
+            />
+          </div>
+        )}
       </div>
       <span
         className={`chip shrink-0 !py-0.5 text-[11px] ${statusTone(row.status)}`}

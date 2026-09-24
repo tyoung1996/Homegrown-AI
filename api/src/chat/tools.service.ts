@@ -290,6 +290,67 @@ export const TOOL_DEFS = [
   {
     type: 'function',
     function: {
+      name: 'recommend',
+      description:
+        'Suggest something to watch for the person talking to you, from ' +
+        'their own viewing. Use for "what should I watch?", "recommend me ' +
+        'a movie", "something funny", "a good horror movie", "something ' +
+        'like Harry Potter" (like), "...but darker" (like plus mood dark), ' +
+        '"what should we watch as a family?" (forFamily), "something I ' +
+        'haven\'t watched", "what sci-fi movies do I already have?" ' +
+        '(genres plus includeWatched), "something around 90 minutes" ' +
+        '(aroundMinutes), "what next, based on what I\'ve been watching" ' +
+        '(basedOnHistory). What we already have comes first. Anything not ' +
+        'in the library is only a suggestion: never add it unless they ' +
+        'then ask you to.',
+      parameters: {
+        type: 'object',
+        properties: {
+          kind: { type: 'string', enum: ['movie', 'show', 'any'] },
+          mood: {
+            type: 'string',
+            enum: [
+              'funny',
+              'scary',
+              'dark',
+              'light',
+              'exciting',
+              'thoughtful',
+              'romantic',
+              'family',
+            ],
+          },
+          genres: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'e.g. ["sci-fi"], ["horror"], ["comedy"]',
+          },
+          like: {
+            type: 'string',
+            description: 'a title they want something similar to',
+          },
+          forFamily: { type: 'boolean' },
+          maxMinutes: { type: 'number' },
+          aroundMinutes: { type: 'number' },
+          includeWatched: {
+            type: 'boolean',
+            description:
+              'true when they want to know what we have, watched or not',
+          },
+          wantNew: {
+            type: 'boolean',
+            description:
+              'true only when they ask for something new or something we ' +
+              'do not have',
+          },
+          basedOnHistory: { type: 'boolean' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'search_catalog',
       description:
         'THE CATALOGUE — every film and show that exists in the world, ' +
@@ -501,10 +562,24 @@ export const TOOL_DEFS = [
   {
     type: 'function',
     function: {
+      name: 'what_am_i_waiting_for',
+      description:
+        'What the person talking to you asked to be added that has just ' +
+        'become ready, and what is still on its way, with how far along it ' +
+        'really is. Use for "what am I waiting for?", "how far along is my ' +
+        'movie?", "is my show ready yet?".',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_media_request_status',
       description:
-        'How things on the library list are getting on. Use for "is Dune ' +
-        'here yet", "what are we waiting on".',
+        'How things on the library list are getting on, for the whole ' +
+        'family. Use for "is Dune here yet?", "what\'s happening with ' +
+        'Dune?", "what are we waiting on?". Repeat the status words it ' +
+        'gives; never make up a percentage or a time.',
       parameters: {
         type: 'object',
         properties: {

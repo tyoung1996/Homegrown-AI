@@ -1,6 +1,6 @@
-'use client';
+"use client";
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from "react";
 
 // what the assistant hands over when someone asks for a film or a show, and
 // the tick-boxes the family taps to say which ones they meant
@@ -46,7 +46,7 @@ export type SeasonRow = {
   name: string;
   episodeCount: number;
   ownedCount: number;
-  state: 'complete' | 'partial' | 'missing';
+  state: "complete" | "partial" | "missing";
   requested: boolean;
   episodes?: EpisodeRow[];
 };
@@ -66,27 +66,27 @@ export type ShowRow = {
   year?: number;
   posterUrl?: string;
   itemId?: string;
-  state: 'complete' | 'partial' | 'missing';
+  state: "complete" | "partial" | "missing";
   missingCount: number;
   seasons: SeasonRow[];
 };
 
 export type Picker =
   | {
-      mode: 'movies' | 'series';
+      mode: "movies" | "series";
       query: string;
       items: PickerItem[];
     }
   | {
-      mode: 'play';
+      mode: "play";
       query: string;
       items: WatchItem[];
       screens: ScreenRow[];
     }
-  | { mode: 'add'; query: string; items: AddItem[] }
-  | { mode: 'show'; query: string; series: ShowRow; screens: ScreenRow[] }
+  | { mode: "add"; query: string; items: AddItem[] }
+  | { mode: "show"; query: string; series: ShowRow; screens: ScreenRow[] }
   | {
-      mode: 'episode';
+      mode: "episode";
       query: string;
       catalogId: number;
       seriesTitle: string;
@@ -102,6 +102,10 @@ export type RequestRow = {
   status: string;
   statusText: string;
   statusNote: string | null;
+  /** 0-100 while it is coming in, only when it was actually measured */
+  progress?: number | null;
+  /** one plain sentence about where it stands */
+  line?: string;
   requestedBy: string;
   mine: boolean;
 };
@@ -126,7 +130,7 @@ type Episode = {
 
 // what to show someone when a call fails, whatever was thrown
 function failure(e: unknown): string {
-  return e instanceof Error ? e.message : 'Something went wrong';
+  return e instanceof Error ? e.message : "Something went wrong";
 }
 
 async function api(
@@ -137,7 +141,7 @@ async function api(
   const res = await fetch(`/api${path}`, {
     ...opts,
     headers: {
-      'content-type': 'application/json',
+      "content-type": "application/json",
       ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
   });
@@ -150,17 +154,17 @@ async function api(
 }
 
 export function statusTone(status: string) {
-  if (status === 'AVAILABLE') return 'border-sage/60 text-sage';
-  if (status === 'UNAVAILABLE' || status === 'CANCELLED')
-    return 'border-line-2 text-muted';
-  return 'border-gold/60 text-gold';
+  if (status === "AVAILABLE") return "border-sage/60 text-sage";
+  if (status === "UNAVAILABLE" || status === "CANCELLED")
+    return "border-line-2 text-muted";
+  return "border-gold/60 text-gold";
 }
 
 // posters are either a catalogue link (an absolute url) or one of ours,
 // which the api gives as a path for the /api proxy to resolve
 export function posterSrc(url?: string | null) {
   if (!url) return null;
-  return url.startsWith('/') ? `/api${url}` : url;
+  return url.startsWith("/") ? `/api${url}` : url;
 }
 
 function Poster({
@@ -177,7 +181,7 @@ function Poster({
     return (
       <div
         className={`grid shrink-0 place-items-center rounded-md border border-line-2 bg-paper text-center text-[10px] leading-tight text-muted ${
-          wide ? 'h-24 w-16' : 'h-20 w-14'
+          wide ? "h-24 w-16" : "h-20 w-14"
         }`}
       >
         {title.slice(0, 18)}
@@ -191,7 +195,7 @@ function Poster({
       alt={title}
       loading="lazy"
       className={`shrink-0 rounded-md border border-line-2 object-cover ${
-        wide ? 'h-24 w-16' : 'h-20 w-14'
+        wide ? "h-24 w-16" : "h-20 w-14"
       }`}
     />
   );
@@ -212,16 +216,16 @@ export function MediaPicker({
   onAdded?: () => void;
 }) {
   // "put it on the TV" is its own little flow — nothing to tick, two taps
-  if (picker.mode === 'play') {
+  if (picker.mode === "play") {
     return <WatchPicker picker={picker} token={token} />;
   }
-  if (picker.mode === 'add') {
+  if (picker.mode === "add") {
     return <AddPicker picker={picker} token={token} onAdded={onAdded} />;
   }
-  if (picker.mode === 'show') {
+  if (picker.mode === "show") {
     return <ShowPicker picker={picker} token={token} onAdded={onAdded} />;
   }
-  if (picker.mode === 'episode') {
+  if (picker.mode === "episode") {
     return <EpisodePicker picker={picker} token={token} onAdded={onAdded} />;
   }
   return <RequestPicker picker={picker} token={token} onAdded={onAdded} />;
@@ -232,7 +236,7 @@ function RequestPicker({
   token,
   onAdded,
 }: {
-  picker: Extract<Picker, { mode: 'movies' | 'series' }>;
+  picker: Extract<Picker, { mode: "movies" | "series" }>;
   token: string;
   onAdded?: () => void;
 }) {
@@ -245,7 +249,7 @@ function RequestPicker({
   const [episodes, setEpisodes] = useState<Record<number, Episode[]>>({});
   const [pickedEpisodes, setPickedEpisodes] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
   const [done, setDone] = useState<Outcome[] | null>(null);
 
   const openable = picker.items.filter((i) => !i.inLibrary);
@@ -254,7 +258,7 @@ function RequestPicker({
     async (item: PickerItem) => {
       setSeries(item);
       setSeasons(null);
-      setError('');
+      setError("");
       try {
         const data = await api(
           `/media/series/${item.catalogId}/seasons`,
@@ -296,7 +300,7 @@ function RequestPicker({
 
   async function submit() {
     setBusy(true);
-    setError('');
+    setError("");
     try {
       const body: Record<string, unknown> = {};
       if (series) {
@@ -305,7 +309,7 @@ function RequestPicker({
           if (pickedSeasons.size) body.seasons = [...pickedSeasons];
           if (pickedEpisodes.size) {
             body.episodes = [...pickedEpisodes].map((k) => {
-              const [season, episode] = k.split('x').map(Number);
+              const [season, episode] = k.split("x").map(Number);
               return { season, episode };
             });
           }
@@ -314,8 +318,8 @@ function RequestPicker({
         body.movies = [...chosen];
       }
       const r = await api(
-        '/media/requests',
-        { method: 'POST', body: JSON.stringify(body) },
+        "/media/requests",
+        { method: "POST", body: JSON.stringify(body) },
         token,
       );
       setDone(r.results as Outcome[]);
@@ -337,14 +341,14 @@ function RequestPicker({
               <span className="min-w-0 truncate">{o.label}</span>
               <span
                 className={`chip shrink-0 !py-0.5 text-[11px] ${statusTone(
-                  o.result === 'already-available' ? 'AVAILABLE' : 'REQUESTED',
+                  o.result === "already-available" ? "AVAILABLE" : "REQUESTED",
                 )}`}
               >
-                {o.result === 'already-available'
-                  ? 'Already in your library'
-                  : o.result === 'already-requested'
-                    ? 'Already on the list'
-                    : 'On the list'}
+                {o.result === "already-available"
+                  ? "Already in your library"
+                  : o.result === "already-requested"
+                    ? "Already on the list"
+                    : "On the list"}
               </span>
             </li>
           ))}
@@ -361,7 +365,7 @@ function RequestPicker({
           <Poster url={series.posterUrl} title={series.title} />
           <div className="min-w-0 flex-1">
             <p className="font-medium">
-              {series.title}{' '}
+              {series.title}{" "}
               {series.year && (
                 <span className="text-muted">({series.year})</span>
               )}
@@ -420,7 +424,7 @@ function RequestPicker({
                         setPickedEpisodes(
                           new Set(
                             [...pickedEpisodes].filter(
-                              (k) => Number(k.split('x')[0]) !== s.seasonNumber,
+                              (k) => Number(k.split("x")[0]) !== s.seasonNumber,
                             ),
                           ),
                         );
@@ -431,9 +435,9 @@ function RequestPicker({
                     onClick={() => toggleSeason(s.seasonNumber)}
                     className="min-w-0 flex-1 text-left"
                   >
-                    <span className="font-medium">{s.name}</span>{' '}
+                    <span className="font-medium">{s.name}</span>{" "}
                     <span className="text-xs text-muted">
-                      {s.episodeCount} episode{s.episodeCount === 1 ? '' : 's'}
+                      {s.episodeCount} episode{s.episodeCount === 1 ? "" : "s"}
                       {s.haveCount > 0 &&
                         !s.inLibrary &&
                         ` · ${s.haveCount} here`}
@@ -448,7 +452,7 @@ function RequestPicker({
                       onClick={() => toggleSeason(s.seasonNumber)}
                       className="text-xs text-muted hover:text-ink"
                     >
-                      {openSeason === s.seasonNumber ? 'hide' : 'episodes'}
+                      {openSeason === s.seasonNumber ? "hide" : "episodes"}
                     </button>
                   )}
                 </div>
@@ -506,9 +510,9 @@ function RequestPicker({
           className="btn mt-3 w-full"
         >
           {busy
-            ? 'Adding…'
+            ? "Adding…"
             : count === 0
-              ? 'Pick something first'
+              ? "Pick something first"
               : `Add ${count} to library`}
         </button>
       </div>
@@ -520,10 +524,10 @@ function RequestPicker({
     <div className="card mt-2 p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
         <p className="eyebrow">
-          {picker.mode === 'series' ? 'Shows' : 'Films'} matching “
+          {picker.mode === "series" ? "Shows" : "Films"} matching “
           {picker.query}”
         </p>
-        {picker.mode === 'movies' && openable.length > 1 && (
+        {picker.mode === "movies" && openable.length > 1 && (
           <button
             onClick={() =>
               setChosen(
@@ -534,7 +538,7 @@ function RequestPicker({
             }
             className="text-xs text-muted hover:text-ink"
           >
-            {chosen.size === openable.length ? 'Clear' : 'Select all'}
+            {chosen.size === openable.length ? "Clear" : "Select all"}
           </button>
         )}
       </div>
@@ -542,7 +546,7 @@ function RequestPicker({
       <ul className="space-y-1.5">
         {picker.items.map((item) => (
           <li key={item.catalogId}>
-            {picker.mode === 'series' ? (
+            {picker.mode === "series" ? (
               <button
                 onClick={() => chooseSeries(item)}
                 className="flex w-full items-start gap-3 rounded-md bg-paper p-2 text-left hover:bg-card"
@@ -550,7 +554,7 @@ function RequestPicker({
                 <Poster url={item.posterUrl} title={item.title} />
                 <span className="min-w-0 flex-1">
                   <span className="block font-medium">
-                    {item.title}{' '}
+                    {item.title}{" "}
                     {item.year && (
                       <span className="text-muted">({item.year})</span>
                     )}
@@ -566,7 +570,7 @@ function RequestPicker({
             ) : (
               <label
                 className={`flex items-start gap-3 rounded-md p-2 ${
-                  item.inLibrary ? 'opacity-60' : 'bg-paper hover:bg-card'
+                  item.inLibrary ? "opacity-60" : "bg-paper hover:bg-card"
                 }`}
               >
                 <input
@@ -584,7 +588,7 @@ function RequestPicker({
                 <Poster url={item.posterUrl} title={item.title} />
                 <span className="min-w-0 flex-1">
                   <span className="block font-medium">
-                    {item.title}{' '}
+                    {item.title}{" "}
                     {item.year && (
                       <span className="text-muted">({item.year})</span>
                     )}
@@ -612,16 +616,16 @@ function RequestPicker({
       </ul>
 
       {error && <p className="mt-2 text-sm text-red">{error}</p>}
-      {picker.mode === 'movies' && (
+      {picker.mode === "movies" && (
         <button
           onClick={submit}
           disabled={busy || chosen.size === 0}
           className="btn mt-3 w-full"
         >
           {busy
-            ? 'Adding…'
+            ? "Adding…"
             : chosen.size === 0
-              ? 'Tick the ones you want'
+              ? "Tick the ones you want"
               : `Add ${chosen.size} to library`}
         </button>
       )}
@@ -665,7 +669,7 @@ export function RequestList({ requests }: { requests: RequestRow[] }) {
 export function useRequests(token: string) {
   const [rows, setRows] = useState<RequestRow[]>([]);
   const refresh = useCallback(() => {
-    api('/media/requests', {}, token)
+    api("/media/requests", {}, token)
       .then(setRows)
       .catch(() => {});
   }, [token]);
@@ -686,7 +690,7 @@ function WatchPicker({
   picker,
   token,
 }: {
-  picker: Extract<Picker, { mode: 'play' }>;
+  picker: Extract<Picker, { mode: "play" }>;
   token: string;
 }) {
   const [item, setItem] = useState<WatchItem | null>(
@@ -699,7 +703,7 @@ function WatchPicker({
   // assistant answered
   useEffect(() => {
     let live = true;
-    api('/media/screens', {}, token)
+    api("/media/screens", {}, token)
       .then((rows: ScreenRow[]) => {
         if (live && rows?.length) setScreens(rows);
       })
@@ -741,7 +745,7 @@ function WatchPicker({
                       i.runtimeMinutes ? `${i.runtimeMinutes} min` : null,
                     ]
                       .filter(Boolean)
-                      .join(' · ')}
+                      .join(" · ")}
                   </span>
                 </span>
               </button>
@@ -795,15 +799,15 @@ function ScreenList({
   onPlaying: (line: string) => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
 
   async function play(screen: ScreenRow) {
     setBusy(screen.id);
-    setError('');
+    setError("");
     try {
       const res = await api(
-        '/media/play',
-        { method: 'POST', body: JSON.stringify({ itemId, screen: screen.id }) },
+        "/media/play",
+        { method: "POST", body: JSON.stringify({ itemId, screen: screen.id }) },
         token,
       );
       onPlaying(res.message ?? `Playing on ${screen.name}`);
@@ -841,7 +845,7 @@ function ScreenList({
                 )}
               </span>
               <span className="shrink-0 text-xs text-muted">
-                {busy === s.id ? 'starting…' : 'play here'}
+                {busy === s.id ? "starting…" : "play here"}
               </span>
             </button>
           </li>
@@ -859,21 +863,21 @@ function AddPicker({
   token,
   onAdded,
 }: {
-  picker: Extract<Picker, { mode: 'add' }>;
+  picker: Extract<Picker, { mode: "add" }>;
   token: string;
   onAdded?: () => void;
 }) {
   const [busy, setBusy] = useState<number | null>(null);
   const [added, setAdded] = useState<Set<number>>(new Set());
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
 
   async function add(item: AddItem) {
     setBusy(item.catalogId);
-    setError('');
+    setError("");
     try {
       await api(
-        '/media/requests',
-        { method: 'POST', body: JSON.stringify({ movies: [item.catalogId] }) },
+        "/media/requests",
+        { method: "POST", body: JSON.stringify({ movies: [item.catalogId] }) },
         token,
       );
       setAdded((s) => new Set(s).add(item.catalogId));
@@ -913,7 +917,7 @@ function AddPicker({
                   onClick={() => add(i)}
                   className="btn shrink-0 text-xs disabled:opacity-50"
                 >
-                  {busy === i.catalogId ? 'adding…' : 'Add to library'}
+                  {busy === i.catalogId ? "adding…" : "Add to library"}
                 </button>
               )}
             </li>
@@ -926,9 +930,9 @@ function AddPicker({
 }
 
 const SEASON_MARK: Record<string, string> = {
-  complete: '✓',
-  partial: '·',
-  missing: '✗',
+  complete: "✓",
+  partial: "·",
+  missing: "✗",
 };
 
 /** A show, season by season: watch what is here, ask for what is not. */
@@ -937,7 +941,7 @@ function ShowPicker({
   token,
   onAdded,
 }: {
-  picker: Extract<Picker, { mode: 'show' }>;
+  picker: Extract<Picker, { mode: "show" }>;
   token: string;
   onAdded?: () => void;
 }) {
@@ -947,16 +951,16 @@ function ShowPicker({
   const [open, setOpen] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [asked, setAsked] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
 
   async function addMissing() {
     setBusy(true);
-    setError('');
+    setError("");
     try {
       await api(
-        '/media/requests',
+        "/media/requests",
         {
-          method: 'POST',
+          method: "POST",
           body: JSON.stringify({ seriesId: show.catalogId, missingOnly: true }),
         },
         token,
@@ -1014,11 +1018,11 @@ function ShowPicker({
         <div className="min-w-0 flex-1">
           <p className="truncate font-medium">{show.title}</p>
           <p className="text-xs text-ink-2">
-            {show.state === 'complete'
-              ? 'You have all of it'
-              : show.state === 'missing'
-                ? 'None of it is in your library'
-                : `${show.missingCount} episode${show.missingCount === 1 ? '' : 's'} missing`}
+            {show.state === "complete"
+              ? "You have all of it"
+              : show.state === "missing"
+                ? "None of it is in your library"
+                : `${show.missingCount} episode${show.missingCount === 1 ? "" : "s"} missing`}
           </p>
         </div>
       </div>
@@ -1034,21 +1038,21 @@ function ShowPicker({
             >
               <span
                 className={
-                  s.state === 'complete'
-                    ? 'text-sage'
-                    : s.state === 'missing'
-                      ? 'text-muted'
-                      : 'text-gold'
+                  s.state === "complete"
+                    ? "text-sage"
+                    : s.state === "missing"
+                      ? "text-muted"
+                      : "text-gold"
                 }
               >
                 {SEASON_MARK[s.state]}
               </span>
               <span className="flex-1 truncate">{s.name}</span>
               <span className="shrink-0 text-xs text-muted">
-                {s.state === 'complete'
-                  ? 'Ready'
-                  : s.state === 'missing'
-                    ? 'Not in library'
+                {s.state === "complete"
+                  ? "Ready"
+                  : s.state === "missing"
+                    ? "Not in library"
                     : `${s.episodeCount - s.ownedCount} missing`}
               </span>
             </button>
@@ -1073,7 +1077,7 @@ function ShowPicker({
                       </button>
                     ) : (
                       <span className="shrink-0 text-xs text-muted">
-                        {e.requested ? 'on the list' : 'not in library'}
+                        {e.requested ? "on the list" : "not in library"}
                       </span>
                     )}
                   </li>
@@ -1091,10 +1095,10 @@ function ShowPicker({
           className="btn mt-3 w-full text-sm disabled:opacity-50"
         >
           {asked
-            ? 'Added to the library list'
+            ? "Added to the library list"
             : busy
-              ? 'adding…'
-              : `Add the ${show.missingCount} missing episode${show.missingCount === 1 ? '' : 's'}`}
+              ? "adding…"
+              : `Add the ${show.missingCount} missing episode${show.missingCount === 1 ? "" : "s"}`}
         </button>
       )}
       {error && <p className="mt-2 text-sm text-red">{error}</p>}
@@ -1109,7 +1113,7 @@ function EpisodePicker({
   token,
   onAdded,
 }: {
-  picker: Extract<Picker, { mode: 'episode' }>;
+  picker: Extract<Picker, { mode: "episode" }>;
   token: string;
   onAdded?: () => void;
 }) {
@@ -1117,17 +1121,17 @@ function EpisodePicker({
   const [playing, setPlaying] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [asked, setAsked] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
   const label = `${seriesTitle} — S${episode.seasonNumber}E${episode.episodeNumber}`;
 
   async function addThisOne() {
     setBusy(true);
-    setError('');
+    setError("");
     try {
       await api(
-        '/media/requests',
+        "/media/requests",
         {
-          method: 'POST',
+          method: "POST",
           body: JSON.stringify({
             seriesId: picker.catalogId,
             episodes: [
@@ -1161,7 +1165,7 @@ function EpisodePicker({
   return (
     <div className="card mt-2 p-3">
       <p className="eyebrow mb-1">
-        {episode.owned ? 'Which TV?' : 'Not in your library'}
+        {episode.owned ? "Which TV?" : "Not in your library"}
       </p>
       <p className="mb-3 text-sm font-medium">
         {label}
@@ -1185,7 +1189,7 @@ function EpisodePicker({
           onClick={addThisOne}
           className="btn w-full text-sm disabled:opacity-50"
         >
-          {busy ? 'adding…' : 'Add this episode'}
+          {busy ? "adding…" : "Add this episode"}
         </button>
       )}
       {error && <p className="mt-2 text-sm text-red">{error}</p>}
