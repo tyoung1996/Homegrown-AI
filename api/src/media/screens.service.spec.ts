@@ -504,9 +504,16 @@ describe('ScreensService playing on a TV that speaks UPnP', () => {
 
     await service.play(tv, { id: 'm1', name: 'Encanto', container: 'mp4' });
 
-    expect(sent.map((s) => s.action)).toEqual(['SetAVTransportURI"', 'Play"']);
-    expect(sent[0].body).toContain('CurrentURI');
-    expect(sent[0].body).toContain('Encanto');
+    // stop first: a Samsung that is already playing refuses the Play after
+    // a new link — found on the real set during the live tests
+    expect(sent.map((s) => s.action)).toEqual([
+      'Stop"',
+      'SetAVTransportURI"',
+      'Play"',
+    ]);
+    const set = sent.find((s) => s.action === 'SetAVTransportURI"')!;
+    expect(set.body).toContain('CurrentURI');
+    expect(set.body).toContain('Encanto');
   });
 
   it('escapes the title rather than breaking the xml', async () => {
@@ -517,10 +524,16 @@ describe('ScreensService playing on a TV that speaks UPnP', () => {
 
     // the description is xml inside an xml value, so it is escaped twice —
     // once as the title, and again when it is carried in the soap body
-    expect(sent[0].body).toContain('&lt;DIDL-Lite');
-    expect(sent[0].body).toContain('Tom &amp;amp; Jerry');
+    expect(sent.find((s) => s.action === 'SetAVTransportURI"')!.body).toContain(
+      '&lt;DIDL-Lite',
+    );
+    expect(sent.find((s) => s.action === 'SetAVTransportURI"')!.body).toContain(
+      'Tom &amp;amp; Jerry',
+    );
     // nothing raw is left to end the element early
-    expect(sent[0].body).not.toContain('Tom & Jerry');
+    expect(
+      sent.find((s) => s.action === 'SetAVTransportURI"')!.body,
+    ).not.toContain('Tom & Jerry');
   });
 
   it('suggests the TV may be in standby when it refuses', async () => {
@@ -603,26 +616,39 @@ describe('starting part way through, and reading back what is on', () => {
 
     await service.play(tv, { id: 'm1', name: 'Encanto' });
 
-    expect(actions.map((a) => a.action)).toEqual(['SetAVTransportURI', 'Play']);
+    expect(actions.map((a) => a.action)).toEqual([
+      'Stop',
+      'SetAVTransportURI',
+      'Play',
+    ]);
   });
 
-  it('waits for the TV to be playing, then seeks to the saved point', async () => {
+  it('never seeks a UPnP TV, even when asked to start part way', async () => {
+    // a real Samsung refused every seek mode on our stream; until one is
+    // shown to work, a UPnP TV starts from the beginning and says so
     const { service } = build({});
-    const actions = renderer({ playingAfter: 2 });
+    const actions = renderer({ playingAfter: 0 });
 
     await service.play(tv, { id: 'm1', name: 'Encanto' }, 2400);
 
-    const names = actions.map((a) => a.action);
-    expect(names.slice(0, 2)).toEqual(['SetAVTransportURI', 'Play']);
-    // it asked until the TV said it was playing, and only then moved
-    expect(
-      names.filter((n) => n === 'GetTransportInfo').length,
-    ).toBeGreaterThanOrEqual(3);
-    const seek = actions.find((a) => a.action === 'Seek')!;
-    expect(seek.body).toContain('<Unit>REL_TIME</Unit>');
-    expect(seek.body).toContain('<Target>00:40:00</Target>');
-    expect(names.indexOf('Seek')).toBe(names.length - 1);
-  }, 20000);
+    expect(actions.map((a) => a.action)).toEqual([
+      'Stop',
+      'SetAVTransportURI',
+      'Play',
+    ]);
+    const { STARTS_PART_WAY } = require('./screens.service');
+    expect(STARTS_PART_WAY.dlna).toBe('no');
+  });
+
+  it('only claims starting part way where it has been proven', () => {
+    const { STARTS_PART_WAY } = require('./screens.service');
+    expect(STARTS_PART_WAY).toEqual({
+      cast: 'yes',
+      dlna: 'no',
+      roku: 'no',
+      session: 'unverified',
+    });
+  });
 
   it('knows which film is on from the link it is playing', async () => {
     const { service } = build({});

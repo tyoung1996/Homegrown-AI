@@ -39,6 +39,23 @@ const ROKU_WAKE_MS = 2500;
 
 export type ScreenKind = 'session' | 'cast' | 'roku' | 'dlna';
 
+/**
+ * Can a TV of this kind start part way through? Only what has been proven
+ * on real hardware is claimed:
+ *   cast     yes — started at 600s and read back 600s on a Google TV
+ *   dlna     no  — a Samsung refused every seek mode on our stream
+ *   roku     no  — a deep link carries the item and nothing else
+ *   session  unverified — Jellyfin delivers the start position to the app
+ *            intact, but no real app has been seen to honour it yet
+ */
+export const STARTS_PART_WAY: Record<ScreenKind, 'yes' | 'no' | 'unverified'> =
+  {
+    cast: 'yes',
+    dlna: 'no',
+    roku: 'no',
+    session: 'unverified',
+  };
+
 export interface Screen {
   id: string; // what the ui and the assistant pass back
   name: string; // what the family calls it: "Front room"
@@ -504,6 +521,11 @@ export class ScreensService {
       `<res protocolInfo="http-get:*:video/${item.container === 'mp4' ? 'mp4' : 'x-matroska'}:*">${xml(url)}</res>` +
       '</item></DIDL-Lite>';
 
+    // a set that is already playing starts a new link by itself the moment
+    // it is given one, and then refuses the Play that follows — so stop it
+    // first, and the switch is the same as starting from nothing. a TV with
+    // nothing on may refuse the Stop; that is fine
+    await this.soap(screen, 'Stop', '').catch(() => undefined);
     await this.soap(
       screen,
       'SetAVTransportURI',
@@ -511,22 +533,10 @@ export class ScreensService {
         `<CurrentURIMetaData>${xml(didl)}</CurrentURIMetaData>`,
     );
     await this.soap(screen, 'Play', '<Speed>1</Speed>');
-
-    if (startSeconds > 0) {
-      // a seek sent before the TV has begun is dropped by some sets, so
-      // wait until it says it is playing, then move to the saved point
-      const until = Date.now() + 15_000;
-      while (Date.now() < until) {
-        const info = await this.soap(screen, 'GetTransportInfo', '');
-        if (/<CurrentTransportState>PLAYING</.test(info)) break;
-        await new Promise((r) => setTimeout(r, 500));
-      }
-      await this.soap(
-        screen,
-        'Seek',
-        `<Unit>REL_TIME</Unit><Target>${clock(startSeconds)}</Target>`,
-      );
-    }
+    // no seek: tested on a real Samsung, it refused every seek mode on this
+    // stream, so a UPnP TV always starts from the beginning for now.
+    // startSeconds is accepted and deliberately not used
+    void startSeconds;
   }
 
   private async soap(screen: Screen, action: string, inner: string) {
