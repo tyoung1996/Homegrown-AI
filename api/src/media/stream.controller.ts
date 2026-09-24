@@ -48,11 +48,17 @@ export class StreamController {
   async stream(
     @Param('id') id: string,
     @Query('t') token: string,
+    @Query('pb') playbackId: string | undefined,
     @Headers('range') range: string | undefined,
     @Res() res: Response,
   ) {
     if (!/^[a-f0-9-]{8,64}$/i.test(id)) throw new NotFoundException();
     if (!token || token !== streamToken(id)) throw new NotFoundException();
+    // which playback this is, so the TV can report it back; it grants
+    // nothing, so it is only checked for shape
+    if (playbackId !== undefined && !/^[a-f0-9]{16}$/i.test(playbackId)) {
+      throw new NotFoundException();
+    }
 
     const file = await this.jellyfin.filePath(id);
     if (!file) throw new NotFoundException();

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import * as net from 'net';
+import { randomBytes } from 'crypto';
 import * as os from 'os';
 import { Client, DefaultMediaReceiver } from 'castv2-client';
 import { JellyfinService } from './jellyfin.service';
@@ -146,6 +147,8 @@ export class ScreensService {
   private started = new Map<string, { title: string; at: number }>();
   // one play at a time per screen, so two requests for the same TV queue
   private busy = new Map<string, Promise<void>>();
+  // the playback this app last started on each screen, by its own id
+  private playbacks = new Map<string, StartedPlayback>();
   private names = loadNames();
   private ignored = loadIgnored();
 
@@ -173,8 +176,18 @@ export class ScreensService {
 
   /** The link a TV is given for a film: our own address, signed, so the
    * Jellyfin key stays on the server. */
-  private filmUrl(itemId: string): string {
-    return `${this.serverAddress()}/api/media/stream/${itemId}?t=${streamToken(itemId)}`;
+  private filmUrl(itemId: string, playbackId: string): string {
+    return (
+      `${this.serverAddress()}/api/media/stream/${itemId}` +
+      `?t=${streamToken(itemId)}&pb=${playbackId}`
+    );
+  }
+
+  /** The playback this app last started on a screen: which item, and the
+   * id that was put in its link. A tracker compares what the TV reports
+   * against this, and only against this. */
+  startedOn(screen: Screen): StartedPlayback | undefined {
+    return this.playbacks.get(screen.id);
   }
 
   private open(host: string, port: number): Promise<boolean> {
@@ -418,7 +431,11 @@ export class ScreensService {
       return `Playing ${item.name} on ${screen.name}${before}`;
     }
 
-    const url = this.filmUrl(item.id);
+    // every start gets its own id, carried in the link the TV plays, so
+    // the TV reports back not just which film but which playback — the same
+    // film started twice is two different playbacks
+    const playbackId = randomBytes(8).toString('hex');
+    const url = this.filmUrl(item.id, playbackId);
     if (screen.kind === 'roku') {
       // a deep link carries the item and nothing else; where it starts is
       // up to the Jellyfin app on the Roku
@@ -433,6 +450,17 @@ export class ScreensService {
         item.container,
         startSeconds,
       );
+    }
+    // a Roku plays Jellyfin's own copy under its own sign-in, and reports
+    // nothing back to us, so there is no playback of ours to watch there
+    if (screen.kind === 'roku') this.playbacks.delete(screen.id);
+    else {
+      this.playbacks.set(screen.id, {
+        playbackId,
+        itemId: item.id,
+        startedAt: Date.now(),
+        startSeconds,
+      });
     }
     return `Playing ${item.name} on ${screen.name}${before}`;
   }
@@ -698,6 +726,7 @@ export class ScreensService {
     return {
       state,
       itemId: itemIdFromUrl(uri),
+      playbackId: playbackIdFromUrl(uri),
       positionSeconds: seconds(tag(pos, 'RelTime')),
       durationSeconds: seconds(tag(pos, 'TrackDuration')),
       detail: transport,
@@ -740,7 +769,13 @@ export class ScreensService {
               done({
                 state: map[st.playerState ?? ''] ?? 'unknown',
                 itemId: itemIdFromUrl(st.media?.contentId ?? ''),
-                positionSeconds: Math.floor(st.currentTime ?? 0),
+                playbackId: playbackIdFromUrl(st.media?.contentId ?? ''),
+                // a receiver that says nothing about where it is has not
+                // said "the start": leave it unknown
+                positionSeconds:
+                  typeof st.currentTime === 'number'
+                    ? Math.floor(st.currentTime)
+                    : undefined,
                 durationSeconds: st.media?.duration
                   ? Math.floor(st.media.duration)
                   : undefined,
@@ -812,11 +847,22 @@ export class ScreensService {
 // both land on "kids room".
 const NOISE = /^(tv|television|new|old|4k|uhd|hdr|display|screen|the)$/;
 
+/** What this app started on a screen. */
+export interface StartedPlayback {
+  playbackId: string;
+  itemId: string;
+  startedAt: number;
+  startSeconds: number;
+}
+
 /** What a TV is doing right now, as far as it will say. */
 export interface PlaybackState {
   state: 'playing' | 'paused' | 'buffering' | 'stopped' | 'idle' | 'unknown';
   /** the Jellyfin item, read from the link being played */
   itemId?: string;
+  /** which playback of it — the id this app put in the link when it
+   * started it. absent for anything this app did not start */
+  playbackId?: string;
   positionSeconds?: number;
   durationSeconds?: number;
   detail?: string;
@@ -824,7 +870,48 @@ export interface PlaybackState {
 
 /** The item a link of ours points at, or undefined for anything else. */
 export function itemIdFromUrl(url: string): string | undefined {
-  return /\/media\/stream\/([a-f0-9-]{8,64})/i.exec(url)?.[1];
+  return /\/api\/media\/stream\/([a-f0-9-]{8,64})(?:[?#]|$)/i.exec(url)?.[1];
+}
+
+/** The playback id in a link of ours, or undefined if it has none. Only
+ * read from links that are ours, so another server's "pb" means nothing. */
+export function playbackIdFromUrl(url: string): string | undefined {
+  if (!itemIdFromUrl(url)) return undefined;
+  return /[?&]pb=([a-f0-9]{16})(?:&|#|$)/i.exec(url)?.[1];
+}
+
+/**
+ * The one gate a progress tracker goes through: a position is only ever
+ * handed back when the TV names the playback that was started — same item,
+ * same playback id — is actually playing or paused, and says where it is.
+ * A stopped TV still reporting its last link, a TV that cannot be reached,
+ * one with no position to give, or anything started since, all give null.
+ */
+export function positionFor(
+  started: StartedPlayback | undefined,
+  now: PlaybackState,
+): number | null {
+  if (!isSamePlayback(started, now)) return null;
+  if (now.state !== 'playing' && now.state !== 'paused') return null;
+  return typeof now.positionSeconds === 'number' ? now.positionSeconds : null;
+}
+
+/**
+ * Is this report about exactly the playback that was started? Only when the
+ * TV names the same item and the same playback id. A TV that cannot say —
+ * unreachable, idle, playing something that is not ours — is not a match,
+ * and neither is the same film started again, which gets a new id.
+ */
+export function isSamePlayback(
+  started: StartedPlayback | undefined,
+  now: PlaybackState,
+): boolean {
+  return (
+    !!started &&
+    !!now.playbackId &&
+    now.itemId === started.itemId &&
+    now.playbackId === started.playbackId
+  );
 }
 
 /** hh:mm:ss, the form UPnP wants a time in */
