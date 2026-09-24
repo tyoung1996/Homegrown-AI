@@ -43,7 +43,11 @@ export type ScreenKind = 'session' | 'cast' | 'roku' | 'dlna';
 /**
  * Can a TV of this kind start part way through? Only what has been proven
  * on real hardware is claimed:
- *   cast     yes — started at 600s and read back 600s on a Google TV
+ *   cast     yes — started at 600s and read back 600s on a Google TV, and
+ *            an MKV episode picked up at its saved point. The picture of
+ *            that episode was confirmed; its sound (5.1 AC3) has not been
+ *            heard yet — the receiver reports no audio tracks for any file,
+ *            so only a person in the room can confirm it
  *   dlna     no  — a Samsung refused every seek mode on our stream
  *   roku     no  — a deep link carries the item and nothing else
  *   session  unverified — Jellyfin delivers the start position to the app
