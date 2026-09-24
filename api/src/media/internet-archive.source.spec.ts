@@ -209,7 +209,8 @@ describe('deciding what to fetch', () => {
     const out = await new Source().start(request());
 
     expect(out.status).toBe(MediaStatus.UNAVAILABLE);
-    expect(out.note).toMatch(/more than one copy/i);
+    expect(out.note).toBe("Couldn't add it");
+    expect(out.detail).toMatch(/ambiguous/);
   });
 
   it('lets an allowlisted identifier settle which of two it is', async () => {
@@ -252,7 +253,8 @@ describe('deciding what to fetch', () => {
     const out = await new Source().start(request());
 
     expect(out.status).toBe(MediaStatus.UNAVAILABLE);
-    expect(out.note).toMatch(/no approved copy/i);
+    expect(out.note).toBe("Couldn't add it");
+    expect(out.detail).toMatch(/approved item/);
     expect(out.ref).toBeUndefined();
     expect(await listDrop()).toEqual([]);
   });
@@ -369,7 +371,8 @@ describe('deciding what to fetch', () => {
     const out = await new Source().start(request());
 
     expect(out.status).toBe(MediaStatus.UNAVAILABLE);
-    expect(out.note).toMatch(/no free copy/i);
+    expect(out.note).toBe("Couldn't add it");
+    expect(out.detail).toMatch(/no candidate matched/);
   });
 
   it('says so when the copy has no usable video', async () => {
@@ -385,9 +388,9 @@ describe('deciding what to fetch', () => {
       files: [{ name: 'notld.pdf', size: '64' }],
     });
 
-    expect((await new Source().start(request())).note).toMatch(
-      /no usable video/i,
-    );
+    const out = await new Source().start(request());
+    expect(out.note).toBe("Couldn't add it");
+    expect(out.detail).toMatch(/no file the importer could use/);
   });
 
   it('survives the search being down', async () => {
@@ -462,7 +465,8 @@ describe('fetching it', () => {
     const out = await source.poll(request({ sourceRef: started.ref }));
 
     expect(out?.status).toBe(MediaStatus.UNAVAILABLE);
-    expect(out?.note).toMatch(/didn't finish/i);
+    expect(out?.note).toBe("Couldn't add it");
+    expect(out?.detail).toMatch(/incomplete/);
     expect(await listDrop()).toEqual([]);
     expect(await fs.readdir(work)).toEqual([]);
   });
@@ -790,5 +794,131 @@ describe('the archive provider with its drive missing', () => {
     expect(await listDrop()).toEqual([]);
     expect(await fs.readdir(work)).toEqual(['notld__notld.mp4.done']);
     expect(await new Fresh().available()).toBe(false);
+  });
+});
+
+describe('clearing away spent handover markers', () => {
+  const SIZE = 64;
+  const ok = {
+    docs: [
+      {
+        identifier: 'notld',
+        title: 'Night of the Living Dead',
+        year: '1968',
+        licenseurl: PD,
+      },
+    ],
+    files: [{ name: 'notld.mp4', size: String(SIZE) }],
+  };
+  const REF = JSON.stringify({ id: 'notld', file: 'notld.mp4', size: SIZE });
+  const marker = () => path.join(work, 'notld__notld.mp4.handoff');
+  const inFlight = () =>
+    request({ sourceRef: REF, status: MediaStatus.ACQUIRING });
+  const downloads = () =>
+    (global.fetch as jest.Mock).mock.calls.filter((c) =>
+      String(c[0]).includes('/download/'),
+    ).length;
+  const has = async (p: string) => !!(await fs.stat(p).catch(() => null));
+
+  it('keeps a marker while its request is still in flight', async () => {
+    // moved into the drop folder, then the process died before the request
+    // was told — the marker is the only thing stopping a second download
+    archive(ok);
+    await fs.mkdir(work, { recursive: true });
+    await fs.writeFile(marker(), '{}');
+
+    await new Source().tidy([inFlight()]);
+
+    expect(await has(marker())).toBe(true);
+  });
+
+  it('removes a marker once its request has moved on', async () => {
+    archive(ok);
+    await fs.mkdir(work, { recursive: true });
+    await fs.writeFile(marker(), '{}');
+    const film = path.join(dropbox, 'Night of the Living Dead (1968).mp4');
+    await fs.writeFile(film, Buffer.alloc(SIZE, 3));
+
+    await new Source().tidy([]);
+
+    expect(await has(marker())).toBe(false);
+    // and the film it guarded is exactly where it was
+    expect((await fs.stat(film)).size).toBe(SIZE);
+  });
+
+  it('removes a marker nobody is waiting on at all', async () => {
+    archive(ok);
+    await fs.mkdir(work, { recursive: true });
+    const stray = path.join(work, 'someone_else__film.mp4.handoff');
+    await fs.writeFile(stray, '{}');
+
+    await new Source().tidy([inFlight()]);
+
+    expect(await has(stray)).toBe(false);
+  });
+
+  it('never touches a finished film, a download in progress, or the drop folder', async () => {
+    archive(ok);
+    await fs.mkdir(work, { recursive: true });
+    const done = path.join(work, 'other__a.mp4.done');
+    const part = path.join(work, 'other__b.mp4.part');
+    const film = path.join(dropbox, 'Metropolis (1927).mp4');
+    await fs.writeFile(done, Buffer.alloc(10, 1));
+    await fs.writeFile(part, Buffer.alloc(5, 1));
+    await fs.writeFile(film, Buffer.alloc(20, 1));
+    await fs.writeFile(marker(), '{}');
+
+    await new Source().tidy([]);
+
+    expect(await has(done)).toBe(true);
+    expect(await has(part)).toBe(true);
+    expect(await has(film)).toBe(true);
+    expect(await has(marker())).toBe(false);
+  });
+
+  it('gets through a crash at the handover with exactly one copy and no refetch', async () => {
+    archive(ok);
+    await fs.mkdir(work, { recursive: true });
+    await fs.writeFile(
+      path.join(work, 'notld__notld.mp4.done'),
+      Buffer.alloc(SIZE, 3),
+    );
+
+    // the handover happens, then the process dies before anyone is told
+    await new Source().poll(inFlight());
+    expect(await has(marker())).toBe(true);
+
+    // a fresh process: the request is still in flight as far as it knows,
+    // so its marker must survive the tidy that runs before the next poll
+    const restarted = new Source();
+    await restarted.tidy([inFlight()]);
+    expect(await has(marker())).toBe(true);
+    const out = await restarted.poll(inFlight());
+    expect(out?.status).toBe(MediaStatus.IMPORTING);
+
+    // now recorded as moved on: the marker is spent and goes
+    await restarted.tidy([]);
+    expect(await has(marker())).toBe(false);
+
+    await settle();
+    expect(downloads()).toBe(0);
+    expect(await listDrop()).toEqual(['Night of the Living Dead (1968).mp4']);
+  });
+
+  it('leaves everything alone while the library drive is missing', async () => {
+    await fs.mkdir(work, { recursive: true });
+    await fs.writeFile(marker(), '{}');
+    const mounts = path.join(root, 'mounts');
+    await fs.writeFile(mounts, '/dev/sdb2 / ext4 rw 0 0\n');
+    process.env.MEDIA_MOUNT = root;
+    process.env.MEDIA_MOUNTS_FILE = mounts;
+    jest.resetModules();
+    const Fresh = require('./internet-archive.source').InternetArchiveSource;
+
+    await new Fresh().tidy([]);
+
+    expect(await has(marker())).toBe(true);
+    delete process.env.MEDIA_MOUNT;
+    delete process.env.MEDIA_MOUNTS_FILE;
   });
 });

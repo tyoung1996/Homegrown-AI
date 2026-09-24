@@ -4,7 +4,7 @@ import { Readable, Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import * as path from 'path';
 import { MediaKind, MediaRequest, MediaStatus } from '@prisma/client';
-import { AcquisitionSource, ProviderResult } from './acquisition';
+import { AcquisitionSource, FAMILY_NOTE, ProviderResult } from './acquisition';
 import { DROPBOX_DIR, MEDIA_ROOT } from './paths';
 import { safe } from './filename';
 import { libraryWritable } from './storage';
@@ -25,10 +25,7 @@ const SEARCH_TIMEOUT_MS = 15_000;
 
 /** Something that went wrong in a way the family can be told about. */
 class NotEligible extends Error {
-  constructor(
-    readonly note: string,
-    readonly detail: string,
-  ) {
+  constructor(readonly detail: string) {
     super(detail);
   }
 }
@@ -133,7 +130,7 @@ export class InternetArchiveSource implements AcquisitionSource {
       void this.download(ref);
       return {
         status: MediaStatus.ACQUIRING,
-        note: 'Adding it to the library',
+        note: FAMILY_NOTE.adding,
         ref: encodeRef(ref),
       };
     } catch (e) {
@@ -141,14 +138,14 @@ export class InternetArchiveSource implements AcquisitionSource {
         this.log.warn(`${request.label}: ${e.detail}`);
         return {
           status: MediaStatus.UNAVAILABLE,
-          note: e.note,
+          note: FAMILY_NOTE.failed,
           detail: e.detail,
         };
       }
       this.log.error(`${request.label}: ${(e as Error).message}`);
       return {
         status: MediaStatus.UNAVAILABLE,
-        note: "Couldn't add it — the search didn't work just now.",
+        note: FAMILY_NOTE.failed,
         detail: `search failed: ${(e as Error).message}`,
       };
     }
@@ -176,9 +173,6 @@ export class InternetArchiveSource implements AcquisitionSource {
     if (!candidates.length) {
       throw new NotEligible(
         approvedIds.length
-          ? "Couldn't add it — there's no approved copy of that one."
-          : "Couldn't add it — there's no free copy of that one.",
-        approvedIds.length
           ? `none of the ${approvedIds.length} approved item(s) is ` +
               `"${request.title}" (${request.year ?? '—'})`
           : `no candidate matched "${request.title}" (${request.year ?? '—'})`,
@@ -188,7 +182,6 @@ export class InternetArchiveSource implements AcquisitionSource {
     let eligible = candidates.filter((c) => rightsOf(c).ok);
     if (!eligible.length) {
       throw new NotEligible(
-        "Couldn't add it — there's no free copy of that one.",
         `${candidates.length} match(es) but none with clear rights: ` +
           candidates
             .map((c) => `${c.identifier}=${rightsOf(c).detail}`)
@@ -208,7 +201,6 @@ export class InternetArchiveSource implements AcquisitionSource {
       );
       if (!named.length) {
         throw new NotEligible(
-          "Couldn't add it — there's no approved copy of that one.",
           `an allowlist is set and none of ${eligible.length} eligible ` +
             `match(es) is on it: ${eligible.map((c) => c.identifier).join(', ')}`,
         );
@@ -218,7 +210,6 @@ export class InternetArchiveSource implements AcquisitionSource {
 
     if (eligible.length > 1) {
       throw new NotEligible(
-        "Couldn't add it — there's more than one copy and I'm not sure which is right.",
         `ambiguous: ${eligible.map((c) => c.identifier).join(', ')}`,
       );
     }
@@ -228,7 +219,6 @@ export class InternetArchiveSource implements AcquisitionSource {
     const file = pickFile(files);
     if (!file) {
       throw new NotEligible(
-        "Couldn't add it — there's no usable video in that copy.",
         `${item.identifier} has no file the importer could use`,
       );
     }
@@ -237,7 +227,6 @@ export class InternetArchiveSource implements AcquisitionSource {
     // finished file against, so it is not started at all
     if (!(Number(file.size) > 0)) {
       throw new NotEligible(
-        "Couldn't add it — there's no usable video in that copy.",
         `${item.identifier}/${file.name} has no listed size; a download ` +
           'could not be verified',
       );
@@ -461,14 +450,14 @@ export class InternetArchiveSource implements AcquisitionSource {
     if (!ref) {
       return {
         status: MediaStatus.UNAVAILABLE,
-        note: "Couldn't add it — the download didn't finish.",
+        note: FAMILY_NOTE.failed,
         detail: 'the stored download reference is unreadable',
       };
     }
     if (!(ref.size > 0)) {
       return {
         status: MediaStatus.UNAVAILABLE,
-        note: "Couldn't add it — the download didn't finish.",
+        note: FAMILY_NOTE.failed,
         detail: `no expected size for ${ref.id}/${ref.file}; cannot verify it`,
       };
     }
@@ -484,7 +473,7 @@ export class InternetArchiveSource implements AcquisitionSource {
       this.jobs.delete(key);
       return {
         status: MediaStatus.UNAVAILABLE,
-        note: "Couldn't add it — the download didn't finish.",
+        note: FAMILY_NOTE.failed,
         detail: `${ref.id}/${ref.file}: ${job.failed}`,
       };
     }
@@ -496,7 +485,7 @@ export class InternetArchiveSource implements AcquisitionSource {
         await fs.unlink(this.donePath(ref)).catch(() => undefined);
         return {
           status: MediaStatus.UNAVAILABLE,
-          note: "Couldn't add it — the download didn't finish.",
+          note: FAMILY_NOTE.failed,
           detail:
             `${ref.id}/${ref.file}: finished file is ${done.size} bytes, ` +
             `expected ${ref.size}; discarded rather than imported`,
@@ -506,12 +495,12 @@ export class InternetArchiveSource implements AcquisitionSource {
         const landed = await this.handOver(request, ref);
         this.jobs.delete(key);
         this.log.log(`${ref.id} handed to the importer as ${landed}`);
-        return { status: MediaStatus.IMPORTING, note: 'Almost ready' };
+        return { status: MediaStatus.IMPORTING, note: FAMILY_NOTE.almost };
       } catch (e) {
         this.log.warn(`could not file ${ref.id}: ${(e as Error).message}`);
         return {
           status: MediaStatus.UNAVAILABLE,
-          note: "Couldn't add it — there was a problem saving it.",
+          note: FAMILY_NOTE.failed,
           detail: `handover failed: ${(e as Error).message}`,
         };
       }
@@ -519,7 +508,7 @@ export class InternetArchiveSource implements AcquisitionSource {
 
     // handed over before a crash that happened before anyone was told
     if (await fs.stat(this.handoffPath(ref)).catch(() => null)) {
-      return { status: MediaStatus.IMPORTING, note: 'Almost ready' };
+      return { status: MediaStatus.IMPORTING, note: FAMILY_NOTE.almost };
     }
 
     if (this.running.has(key)) return null;
@@ -562,6 +551,41 @@ export class InternetArchiveSource implements AcquisitionSource {
       await fs.unlink(done);
     }
     return path.basename(dest);
+  }
+
+  /**
+   * Remove handover markers that have done their job.
+   *
+   * A marker exists for one reason: a crash between moving the file into the
+   * drop folder and the request being told, which would otherwise look like
+   * a download that never happened and start it again. Once the request has
+   * been recorded as having moved on, nothing will ask about it again, and
+   * the marker is spent.
+   *
+   * Only markers are ever removed here. A .done is a verified film and a
+   * .part may be mid-write; neither is touched, and nothing in the drop
+   * folder or the library is either — deleting a marker cannot lose a file
+   * or cause one to be fetched twice, because nothing still in flight ever
+   * has its marker removed.
+   */
+  async tidy(inFlight: MediaRequest[]): Promise<void> {
+    if (!libraryWritable().ok) return;
+    const keep = new Set<string>();
+    for (const r of inFlight) {
+      const ref = decodeRef(r.sourceRef);
+      if (ref) keep.add(path.basename(this.handoffPath(ref)));
+    }
+    let names: string[];
+    try {
+      names = await fs.readdir(this.workDir());
+    } catch {
+      return; // no work folder yet, nothing to tidy
+    }
+    for (const name of names) {
+      if (!name.endsWith('.handoff') || keep.has(name)) continue;
+      await fs.unlink(path.join(this.workDir(), name)).catch(() => undefined);
+      this.log.log(`handover marker spent, removed: ${name}`);
+    }
   }
 
   /** For the admin panel: how far along everything is. */

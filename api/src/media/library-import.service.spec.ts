@@ -28,7 +28,7 @@ afterEach(async () => {
 function services(match: any = null) {
   const media = {
     matchFile: jest.fn(async () => match),
-    setStatus: jest.fn(async () => undefined),
+    setStatus: jest.fn<Promise<void>, unknown[]>(async () => undefined),
     markImported: jest.fn(async () => undefined),
     // only Jellyfin seeing the file marks something ready; the sweep asks
     // after every pass
@@ -222,5 +222,31 @@ describe('with the library drive missing', () => {
     await svc.sweep();
 
     expect(media.confirmImported).toHaveBeenCalled();
+  });
+});
+
+describe('what the family is told when an import goes wrong', () => {
+  it('puts it back on the list with a family sentence, and the reason for the admin', async () => {
+    const file = await drop('Interstellar.2014.1080p.mkv');
+    const { media, jellyfin } = services({
+      id: 'r1',
+      label: 'Interstellar (2014)',
+    });
+    const svc = new LibraryImportService(media, jellyfin);
+    // make the move fail: the films folder cannot be created because a
+    // plain file is sitting where it should be
+    await fs.writeFile(path.join(root, 'Movies'), 'not a folder');
+
+    await svc.sweep(); // first look: waits for the file to settle
+    await svc.sweep(); // second look: tries to file it, and fails
+
+    const last = media.setStatus.mock.calls.at(-1)!;
+    expect(last[1]).toBe(MediaStatus.REQUESTED);
+    expect(last[2]).toBe(
+      "On the list — we'll let you know when it's ready to watch.",
+    );
+    expect(last[2]).not.toMatch(/file|server|log/i);
+    expect(last[3]).toMatch(/import failed/);
+    expect(await exists(file)).toBe(true);
   });
 });

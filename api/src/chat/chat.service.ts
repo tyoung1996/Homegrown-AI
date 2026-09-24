@@ -269,10 +269,10 @@ export class ChatService {
     if (imageData) {
       try {
         uploadedImage = await savePhoto(imageData);
-      } catch (e: any) {
+      } catch (e) {
         emit({
           type: 'error',
-          message: e.message ?? 'Could not read that photo',
+          message: (e as Error).message ?? 'Could not read that photo',
         });
         return;
       }
@@ -379,8 +379,8 @@ export class ChatService {
               });
               const [d] = await this.calendar.describe([ev]);
               result = `Added: ${d.title} — ${d.when}${d.location ? ' at ' + d.location : ''}${d.who ? ' (for ' + d.who + ')' : ''}. Confirm this to the user in one friendly line, including the day and time.`;
-            } catch (e: any) {
-              result = `Could not add it: ${e.message}. Ask the user for the missing detail.`;
+            } catch (e) {
+              result = `Could not add it: ${(e as Error).message}. Ask the user for the missing detail.`;
             }
           } else if (name === 'list_events') {
             emit({ type: 'status', text: 'Checking the family calendar' });
@@ -412,8 +412,8 @@ export class ChatService {
               });
               result =
                 'The image was created and is already displayed to the user. Reply with one short, warm sentence about it. Do not include a link or markdown image.';
-            } catch (e: any) {
-              this.log.error(`image gen failed: ${e.message}`);
+            } catch (e) {
+              this.log.error(`image gen failed: ${(e as Error).message}`);
               result = 'Image generation failed. Apologize briefly.';
             }
           } else if (name === 'find_something_to_watch') {
@@ -542,8 +542,8 @@ export class ChatService {
               } else {
                 result = `Nothing on the shelf or in the catalogue matches "${query}". Ask them to try another title.`;
               }
-            } catch (e: any) {
-              result = `Could not look it up: ${e.message}`;
+            } catch (e) {
+              result = `Could not look it up: ${(e as Error).message}`;
             }
           } else if (name === 'search_catalog') {
             const query = String(args.query ?? '').trim();
@@ -577,8 +577,8 @@ export class ChatService {
                   'each one. They are on screen as tick boxes. Say in one ' +
                   'short line what you found. Do not list them all again.';
               }
-            } catch (e: any) {
-              result = `Lookup failed: ${e.message}`;
+            } catch (e) {
+              result = `Lookup failed: ${(e as Error).message}`;
             }
           } else if (name === 'get_show_availability') {
             emit({ type: 'status', text: 'Checking the seasons' });
@@ -598,8 +598,8 @@ export class ChatService {
                   alreadyRequested: x.requested,
                 })),
               });
-            } catch (e: any) {
-              result = `Could not read the seasons: ${e.message}`;
+            } catch (e) {
+              result = `Could not read the seasons: ${(e as Error).message}`;
             }
           } else if (name === 'add_to_library') {
             emit({ type: 'status', text: 'Adding to the library list' });
@@ -652,8 +652,8 @@ export class ChatService {
                     'warmly in one or two lines.'
                   : 'There was nothing missing to add — tell them they already have it all.';
               }
-            } catch (e: any) {
-              result = `Could not add that: ${e.message}`;
+            } catch (e) {
+              result = `Could not add that: ${(e as Error).message}`;
             }
           } else if (name === 'list_tvs') {
             emit({ type: 'status', text: 'Looking for the TVs' });
@@ -667,8 +667,8 @@ export class ChatService {
                     })),
                   )
                 : 'No TVs are reachable right now.';
-            } catch (e: any) {
-              result = `Could not look for the TVs: ${e.message}`;
+            } catch (e) {
+              result = `Could not look for the TVs: ${(e as Error).message}`;
             }
           } else if (name === 'play_on_tv') {
             const tv = String(args.tv ?? '').trim();
@@ -677,15 +677,15 @@ export class ChatService {
               result =
                 (await this.media.playOn(String(args.itemId ?? ''), tv)) +
                 ' — it is already starting. Confirm in one short, warm line.';
-            } catch (e: any) {
-              result = `It would not start: ${e.message}`;
+            } catch (e) {
+              result = `It would not start: ${(e as Error).message}`;
             }
           } else if (name === 'stop_tv') {
             emit({ type: 'status', text: 'Stopping it' });
             try {
               result = await this.media.stopScreen(String(args.tv ?? ''));
-            } catch (e: any) {
-              result = `Could not stop it: ${e.message}`;
+            } catch (e) {
+              result = `Could not stop it: ${(e as Error).message}`;
             }
           } else if (name === 'get_media_request_status') {
             emit({ type: 'status', text: 'Checking the library list' });
@@ -745,8 +745,8 @@ export class ChatService {
           messages.push({ role: 'tool', tool_name: name, content: result });
         }
       }
-    } catch (e: any) {
-      this.log.error(`chat failed: ${e.message}`);
+    } catch (e) {
+      this.log.error(`chat failed: ${(e as Error).message}`);
       emit({ type: 'error', message: 'The model backend is not responding' });
       return;
     }
@@ -770,8 +770,8 @@ export class ChatService {
     if (sources.size) emit({ type: 'sources', urls: [...sources].slice(0, 8) });
     emit({ type: 'done' });
     // learn from the exchange in the background; never delays the reply
-    void this.reflect(userId, convo.id).catch((e) =>
-      this.log.warn(`reflect: ${e.message}`),
+    void this.reflect(userId, convo.id).catch((e: unknown) =>
+      this.log.warn(`reflect: ${(e as Error).message}`),
     );
   }
 
@@ -979,8 +979,8 @@ export class ChatService {
         reply = 'Here you go — hope you like it!';
       }
       emit({ type: 'token', text: reply });
-    } catch (e: any) {
-      this.log.error(`image message failed: ${e.message}`);
+    } catch (e) {
+      this.log.error(`image message failed: ${(e as Error).message}`);
       emit({ type: 'error', message: 'I had trouble with that image, sorry!' });
       return;
     }
@@ -1089,7 +1089,9 @@ export class ChatService {
     try {
       const t: any = await fetch(`${OLLAMA}/api/tags`).then((r) => r.json());
       for (const m of t.models ?? []) tags.add(m.name.replace(/:latest$/, ''));
-    } catch {}
+    } catch {
+      // Ollama not answering: no models are offered, which is the right answer
+    }
     try {
       const comfyUrl = process.env.COMFY_URL ?? 'http://127.0.0.1:8188';
       comfy = (
@@ -1097,7 +1099,9 @@ export class ChatService {
           signal: AbortSignal.timeout(2000),
         })
       ).ok;
-    } catch {}
+    } catch {
+      // ComfyUI not answering: image generation is simply not offered
+    }
     this.avail = { at: Date.now(), tags, comfy };
   }
   private async modelReady() {

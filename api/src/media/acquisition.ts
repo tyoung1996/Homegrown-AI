@@ -22,6 +22,20 @@ import { libraryWritable } from './storage';
  */
 
 /**
+ * The only things the family is ever told about a request. Providers pick
+ * from these rather than writing their own, so nothing about files,
+ * downloads, sources or searches can leak into the family's list — what
+ * went wrong goes in a result's `detail`, which only an admin sees.
+ */
+export const FAMILY_NOTE = {
+  waiting: "On the list — we'll let you know when it's ready to watch.",
+  adding: 'Adding it to the library',
+  almost: 'Almost ready',
+  ready: 'In the library — ready to watch',
+  failed: "Couldn't add it",
+} as const;
+
+/**
  * What a provider is allowed to say. AVAILABLE is deliberately not in here:
  * ready to watch is Jellyfin's word and nobody else's, given in
  * MediaService.confirmImported() once Jellyfin can actually see the thing.
@@ -88,6 +102,15 @@ export interface AcquisitionSource {
 
   /** Optional detail for the admin panel when it is not working. */
   health?(): Promise<{ ok: boolean; detail?: string }>;
+
+  /**
+   * Tidy up whatever the provider kept for crash recovery, now that the app
+   * has safely recorded where each request stands. `inFlight` is every
+   * request this provider still holds that has not moved on yet — anything
+   * kept for one of those must stay. Anything else is spent. Only ever
+   * called with a complete list, so an absence really means "done with".
+   */
+  tidy?(inFlight: MediaRequest[]): Promise<void>;
 }
 
 /** Everything a provider may return. Anything else is a bug in the provider
@@ -140,7 +163,7 @@ export class DropFolderSource implements AcquisitionSource {
     this.log.log(`waiting on a file for ${request.label}`);
     return Promise.resolve({
       status: MediaStatus.REQUESTED,
-      note: 'On the list — it will appear here once the file is added.',
+      note: FAMILY_NOTE.waiting,
     });
   }
 
@@ -304,7 +327,7 @@ export class AcquisitionRegistry {
       );
       return {
         status: MediaStatus.UNAVAILABLE,
-        note: "Couldn't add it — nothing could take it on just now.",
+        note: FAMILY_NOTE.failed,
         detail: `${source.name} threw: ${(e as Error).message}`,
       };
     }
@@ -412,7 +435,7 @@ export class AcquisitionRegistry {
       return {
         ...result,
         status: MediaStatus.IMPORTING,
-        note: 'Almost ready',
+        note: FAMILY_NOTE.almost,
       };
     }
     return result;

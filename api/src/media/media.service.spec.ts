@@ -1,4 +1,4 @@
-import { MediaKind, MediaStatus, Role } from '@prisma/client';
+import { MediaKind, MediaRequest, MediaStatus, Role } from '@prisma/client';
 import { MediaService } from './media.service';
 import {
   AcquisitionRegistry,
@@ -307,7 +307,9 @@ describe('MediaService requests', () => {
     // wanted and not here yet is the truth; "couldn't add it" would be a
     // guess about the future
     expect(rows[0].status).toBe(MediaStatus.REQUESTED);
-    expect(rows[0].statusNote).toBe('On the list');
+    expect(rows[0].statusNote).toBe(
+      "On the list — we'll let you know when it's ready to watch.",
+    );
     expect(rows[0].adminNote).toMatch(/no automatic source/i);
   });
 });
@@ -1020,7 +1022,7 @@ describe('anything in the catalogue can be asked for', () => {
     available: async () => true,
     start: async () => ({
       status: MediaStatus.REQUESTED,
-      note: 'On the list — it will appear here once the file is added.',
+      note: "On the list — we'll let you know when it's ready to watch.",
     }),
   };
 
@@ -1123,7 +1125,7 @@ describe('a request moving to a better provider', () => {
     available: async () => true,
     start: async () => ({
       status: MediaStatus.REQUESTED,
-      note: 'On the list — it will appear here once the file is added.',
+      note: "On the list — we'll let you know when it's ready to watch.",
     }),
   });
   // a fetcher that can be switched on, made to decline, or made to fail
@@ -1340,5 +1342,71 @@ describe('who gets to see what is wrong', () => {
 
     expect(admin.storage).toBeDefined();
     expect(admin.acquisition).toBeDefined();
+  });
+});
+
+describe('providers tidying up after themselves', () => {
+  const tidier = (seen: MediaRequest[][]): AcquisitionSource => ({
+    name: 'tidy',
+    label: 'Tidy',
+    automatic: true,
+    supports: () => true,
+    available: async () => true,
+    start: async () => ({
+      status: MediaStatus.ACQUIRING,
+      note: 'Adding it to the library',
+      ref: 'r',
+    }),
+    // the first request finishes; the second is still going
+    poll: async (r) =>
+      r.id === 'a'
+        ? { status: MediaStatus.IMPORTING, note: 'Almost ready' }
+        : null,
+    tidy: async (inFlight) => {
+      seen.push(inFlight);
+    },
+  });
+  const row = (id: string) => ({
+    id,
+    kind: MediaKind.MOVIE,
+    catalogId: 1,
+    title: id,
+    label: id,
+    status: MediaStatus.ACQUIRING,
+    source: 'tidy',
+    sourceRef: 'r',
+  });
+
+  it('is told only about what is still in flight after this round', async () => {
+    const seen: MediaRequest[][] = [];
+    const { service } = build({
+      providers: [tidier(seen)],
+      rows: [row('a'), row('b')],
+    });
+
+    await service.pollProviders();
+
+    // "a" moved on in this very round, so it is not on the list
+    expect(seen).toHaveLength(1);
+    expect(seen[0].map((r) => r.id)).toEqual(['b']);
+  });
+
+  it('is not asked to tidy at all if the list could not be read', async () => {
+    const seen: MediaRequest[][] = [];
+    const { service, prisma } = build({
+      providers: [tidier(seen)],
+      rows: [row('b')],
+    });
+    const real = prisma.mediaRequest.findMany;
+    let calls = 0;
+    prisma.mediaRequest.findMany = jest.fn(async (args: any) => {
+      // the poll's own read works; the fresh read for tidying fails
+      if (++calls > 1) throw new Error('database went away');
+      return real(args);
+    });
+
+    await service.pollProviders();
+
+    expect(seen).toHaveLength(0);
   });
 });

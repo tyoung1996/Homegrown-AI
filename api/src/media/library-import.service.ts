@@ -18,6 +18,7 @@ import {
   SHOWS_SUBDIR,
 } from './paths';
 import { libraryWritable } from './storage';
+import { FAMILY_NOTE } from './acquisition';
 import {
   VIDEO_EXTENSIONS,
   episodeTarget,
@@ -193,7 +194,7 @@ export class LibraryImportService implements OnModuleInit, OnModuleDestroy {
       await this.media.setStatus(
         request.id,
         MediaStatus.IMPORTING,
-        'Adding it to the library',
+        FAMILY_NOTE.adding,
       );
     }
 
@@ -212,10 +213,12 @@ export class LibraryImportService implements OnModuleInit, OnModuleDestroy {
     } catch (e) {
       this.log.error(`import failed for ${relative}: ${(e as Error).message}`);
       if (request) {
+        // back on the list for the family; the reason is for the admin
         await this.media.setStatus(
           request.id,
           MediaStatus.REQUESTED,
-          'The file could not be filed away — check the server logs.',
+          FAMILY_NOTE.waiting,
+          `import failed for ${relative}: ${(e as Error).message}`,
         );
       }
       return null;

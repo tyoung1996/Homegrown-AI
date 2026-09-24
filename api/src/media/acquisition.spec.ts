@@ -293,7 +293,11 @@ describe('the watched folder still works', () => {
     const out = await drop.start(request());
 
     expect(out.status).toBe(MediaStatus.REQUESTED);
-    expect(out.note).toMatch(/once the file is added/i);
+    // nothing about files or folders — the family just knows it is wanted
+    expect(out.note).toBe(
+      "On the list — we'll let you know when it's ready to watch.",
+    );
+    expect(out.note).not.toMatch(/file|folder|drop|download/i);
   });
 
   it('is the one that gets used when it is the only one registered', async () => {

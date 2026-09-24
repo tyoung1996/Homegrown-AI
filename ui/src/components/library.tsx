@@ -30,10 +30,11 @@ async function api(
   return res.json();
 }
 
+// what the family's health check returns. admins get a great deal more from
+// the same endpoint, but nothing on this page needs it
 type Health = {
-  catalog: { configured: boolean; ok: boolean; detail?: string };
+  catalog: { configured: boolean; ok: boolean };
   jellyfin: { configured: boolean; ok: boolean; name?: string };
-  source: { name: string; label: string } | null;
   ready: boolean;
 };
 
@@ -223,13 +224,9 @@ export function Library({
           </section>
         )}
 
-        {health?.source && (
+        {health?.jellyfin.ok && health.jellyfin.name && (
           <p className="mt-8 text-xs text-muted">
-            New files are picked up from the server’s drop folder
-            {health.jellyfin.ok && health.jellyfin.name
-              ? ` and appear in ${health.jellyfin.name}`
-              : ''}
-            .
+            Everything here plays from {health.jellyfin.name}.
           </p>
         )}
       </div>

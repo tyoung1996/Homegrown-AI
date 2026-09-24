@@ -12,6 +12,7 @@ import { JellyfinService, PlayableItem } from './jellyfin.service';
 import { ScreensService, Screen } from './screens.service';
 import {
   AcquisitionRegistry,
+  FAMILY_NOTE,
   ProviderHealth,
   ProviderResult,
 } from './acquisition';
@@ -672,7 +673,7 @@ export class MediaService {
       where: { id: request.id },
       data: {
         status: MediaStatus.REQUESTED,
-        statusNote: 'On the list',
+        statusNote: FAMILY_NOTE.waiting,
         source: null,
         sourceRef: null,
         retryAfter,
@@ -816,7 +817,40 @@ export class MediaService {
       await this.applySource(row, source.name, result);
       moved++;
     }
+    await this.tidyProviders();
     return moved;
+  }
+
+  /**
+   * Let each provider clear away what it kept for crash recovery. Asked
+   * only after everything above has been written, and with a fresh read of
+   * what is still in flight — so a request that has only just moved on is
+   * already off the list, and one still going is on it. If that read fails
+   * nobody is asked to tidy: an incomplete list would make a live marker
+   * look spent.
+   */
+  private async tidyProviders(): Promise<void> {
+    let inFlight: MediaRequest[];
+    try {
+      inFlight = await this.prisma.mediaRequest.findMany({
+        where: {
+          status: { in: [MediaStatus.SEARCHING, MediaStatus.ACQUIRING] },
+        },
+      });
+    } catch (e) {
+      this.log.warn(`not tidying providers: ${(e as Error).message}`);
+      return;
+    }
+    for (const source of this.sources.sources()) {
+      const mine = inFlight.filter(
+        (r) => r.source?.toLowerCase() === source.name.toLowerCase(),
+      );
+      try {
+        await source.tidy?.(mine);
+      } catch (e) {
+        this.log.warn(`${source.name} could not tidy: ${(e as Error).message}`);
+      }
+    }
   }
 
   private async onShelf(spec: {
@@ -902,10 +936,21 @@ export class MediaService {
     return { ok: true };
   }
 
-  async setStatus(id: string, status: MediaStatus, note?: string) {
+  /** Move a request along. `note` is what the family sees; `adminNote` is
+   * the technical why, which they never do. */
+  async setStatus(
+    id: string,
+    status: MediaStatus,
+    note?: string,
+    adminNote?: string,
+  ) {
     return this.prisma.mediaRequest.update({
       where: { id },
-      data: { status, ...(note ? { statusNote: note } : {}) },
+      data: {
+        status,
+        ...(note ? { statusNote: note } : {}),
+        ...(adminNote ? { adminNote } : {}),
+      },
       include: { user: { select: { displayName: true } } },
     });
   }
@@ -954,7 +999,7 @@ export class MediaService {
       where: { id },
       data: {
         status: MediaStatus.IMPORTING,
-        statusNote: 'Almost ready',
+        statusNote: FAMILY_NOTE.almost,
         filePath,
       },
     });
@@ -979,7 +1024,7 @@ export class MediaService {
         where: { id: row.id },
         data: {
           status: MediaStatus.AVAILABLE,
-          statusNote: 'In the library — ready to watch',
+          statusNote: FAMILY_NOTE.ready,
           jellyfinId: seen,
         },
         include: { user: { select: { displayName: true } } },
