@@ -487,7 +487,10 @@ export const TOOL_DEFS = [
     type: 'function',
     function: {
       name: 'stop_tv',
-      description: 'Stop whatever is playing on a TV.',
+      description:
+        'Stop whatever is playing on a TV. Call this every time they ask to ' +
+        'stop, turn off or end what is on a TV — the TV only stops when this ' +
+        'is called, so never say a TV has stopped unless this returned.',
       parameters: {
         type: 'object',
         properties: { tv: { type: 'string' } },

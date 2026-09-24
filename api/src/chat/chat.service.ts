@@ -714,8 +714,8 @@ export class ChatService {
                 : !w.length
                   ? 'They have not watched anything yet.'
                   : JSON.stringify(w) +
-                    ' — most recent first. Use the lines, naturally; keep ' +
-                    'it short. Never mention ids.';
+                    ' — most recent first. Mention each one, using its ' +
+                    'line, naturally and briefly. Never mention ids.';
             } catch (e) {
               result = `Could not check: ${(e as Error).message}`;
             }
