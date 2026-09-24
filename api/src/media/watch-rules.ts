@@ -142,6 +142,43 @@ export function seriesStart(
   return after ? { item: after, startSeconds: 0, why: 'next episode' } : null;
 }
 
+/** Has this person been anywhere near it: started, part watched or finished. */
+const touched = (e: PersonalItem) =>
+  !!e.lastPlayed || e.played || e.positionTicks > 0;
+
+/**
+ * The episode someone is on: the regular episode they watched most
+ * recently, whether they finished it or not. Specials never count — they
+ * sit outside the order, so there is no "next" after one.
+ */
+export function currentEpisode(episodes: PersonalItem[]): PersonalItem | null {
+  const ordered = inOrder(episodes);
+  let best: PersonalItem | null = null;
+  for (const e of ordered.filter(touched)) {
+    // most recent wins; with no dates to go on, the later episode does
+    if (!best || (e.lastPlayed ?? '') >= (best.lastPlayed ?? '')) best = e;
+  }
+  return best;
+}
+
+/**
+ * "Play the next episode": one on from the episode they are on, from the
+ * beginning — even when the one they are on is only part watched, since
+ * picking that back up is what "continue" is for. Crosses into the next
+ * season, never chooses a special, and never wraps round: at the end of
+ * what is in the library it returns null.
+ */
+export function nextEpisodeStart(episodes: PersonalItem[]): StartPoint | null {
+  const ordered = inOrder(episodes);
+  if (!ordered.length) return null;
+  const current = currentEpisode(episodes);
+  if (!current) {
+    return { item: ordered[0], startSeconds: 0, why: 'first episode' };
+  }
+  const next = ordered[ordered.indexOf(current) + 1];
+  return next ? { item: next, startSeconds: 0, why: 'next episode' } : null;
+}
+
 /** One named episode, including a special when it is named. */
 export function episodeStart(
   episodes: PersonalItem[],

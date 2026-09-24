@@ -34,6 +34,7 @@ const WATCH_TOOL_NAMES = [
   'stop_tv',
   'what_was_i_watching',
   'how_far_into',
+  'play_show',
 ];
 
 export type StreamEvent =
@@ -710,28 +711,75 @@ export class ChatService {
                 ? 'Their viewing is not linked to them yet, so you cannot ' +
                   'tell what they were watching. Say so kindly: a grown-up ' +
                   'can link it in the admin panel.'
-                : JSON.stringify(w) +
-                  ' — say it naturally ("you were about 40 minutes into ' +
-                  'Jaws"). Never mention ids.';
+                : !w.length
+                  ? 'They have not watched anything yet.'
+                  : JSON.stringify(w) +
+                    ' — most recent first. Use the lines, naturally; keep ' +
+                    'it short. Never mention ids.';
             } catch (e) {
               result = `Could not check: ${(e as Error).message}`;
             }
           } else if (name === 'how_far_into') {
             emit({ type: 'status', text: 'Checking how far you got' });
             try {
-              const h = await this.watching.howFar(
-                userId,
-                String((args as { itemId?: unknown }).itemId ?? ''),
-              );
+              const asked = args as { itemId?: unknown; show?: unknown };
+              const line = await this.watching.howFar(userId, {
+                itemId: said(asked.itemId) || undefined,
+                show: said(asked.show) || undefined,
+              });
               result =
-                h === null
+                line === null
                   ? 'Their viewing is not linked to them yet, so you cannot ' +
                     'tell how far they got. Say so kindly.'
-                  : h === 'not a film'
-                    ? 'You can only keep track of films so far, not shows.'
-                    : JSON.stringify(h) + ' — say it in one natural line.';
+                  : `${line} — say this in one natural line.`;
             } catch (e) {
               result = `Could not check: ${(e as Error).message}`;
+            }
+          } else if (name === 'play_show') {
+            const asked = args as {
+              show?: unknown;
+              tv?: unknown;
+              action?: unknown;
+              season?: unknown;
+              episode?: unknown;
+              from?: unknown;
+            };
+            const tv = said(asked.tv).trim();
+            emit({ type: 'status', text: `Putting it on the ${tv}` });
+            try {
+              const action =
+                asked.action === 'next' ||
+                asked.action === 'episode' ||
+                asked.action === 'continue'
+                  ? asked.action
+                  : asked.action === 'start_over'
+                    ? 'start-over'
+                    : 'continue';
+              const num = (x: unknown) =>
+                x === undefined || x === null || x === ''
+                  ? undefined
+                  : Number(x);
+              const out = await this.watching.playShow(
+                userId,
+                {
+                  show: said(asked.show) || undefined,
+                  action,
+                  season: num(asked.season),
+                  episode: num(asked.episode),
+                  from: asked.from === 'start' ? 'start' : 'auto',
+                },
+                tv,
+              );
+              result =
+                out.kind === 'playing'
+                  ? `${out.message} — it is already starting. Confirm in one ` +
+                    'short, warm line, keeping what it says about where it ' +
+                    'started.'
+                  : out.kind === 'choose'
+                    ? `${out.message} — ask them this; do not guess.`
+                    : `${out.message} — tell them this kindly.`;
+            } catch (e) {
+              result = `It would not start: ${(e as Error).message}`;
             }
           } else if (name === 'get_media_request_status') {
             emit({ type: 'status', text: 'Checking the library list' });
@@ -1232,4 +1280,9 @@ export class ChatService {
       sizeBytes: m.size,
     }));
   }
+}
+
+/** A tool argument as text: the model sends strings, sometimes numbers. */
+function said(x: unknown): string {
+  return typeof x === 'string' ? x : typeof x === 'number' ? String(x) : '';
 }

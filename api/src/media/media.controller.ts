@@ -137,6 +137,47 @@ export class MediaController {
       .then((message) => ({ ok: true, message }));
   }
 
+  /** Continue, next episode, start over or one episode of a show, for the
+   * signed-in person. */
+  @Post('shows/play')
+  playShow(
+    @Req() req: AuthedRequest,
+    @Body()
+    body: {
+      show?: string;
+      tv?: string;
+      action?: string;
+      season?: number;
+      episode?: number;
+      from?: string;
+    },
+  ) {
+    const tv = String(body.tv ?? '').trim();
+    const action = body.action;
+    if (
+      !tv ||
+      (action !== 'continue' &&
+        action !== 'next' &&
+        action !== 'start-over' &&
+        action !== 'episode')
+    ) {
+      throw new BadRequestException(
+        'Pick a TV, and continue, next, start-over or episode',
+      );
+    }
+    return this.watching.playShow(
+      req.user.userId,
+      {
+        show: body.show?.trim() || undefined,
+        action,
+        season: body.season != null ? Number(body.season) : undefined,
+        episode: body.episode != null ? Number(body.episode) : undefined,
+        from: body.from === 'start' ? 'start' : 'auto',
+      },
+      tv,
+    );
+  }
+
   @Post('stop')
   stop(@Body() body: { screen?: string }) {
     return this.watching

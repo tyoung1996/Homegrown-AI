@@ -4,11 +4,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
-import { JellyfinService, PersonalItem } from './jellyfin.service';
+import { JellyfinService, PersonalItem, ResumeRules } from './jellyfin.service';
 import {
   From,
   StartPoint,
+  currentEpisode,
   episodeStart,
+  inOrder,
+  nextEpisodeStart,
   resumable,
   seriesStart,
   startFor,
@@ -112,6 +115,50 @@ export class WatchStateService {
       this.jellyfin.resumeRules(),
     ]);
     return episodeStart(episodes, season, episode, from, rules);
+  }
+
+  /** "Play the next episode": one on from the episode they are on. Null
+   * when they have no linked account; 'end' at the end of the library. */
+  async nextEpisode(
+    userId: string,
+    seriesId: string,
+  ): Promise<StartPoint | 'end' | null> {
+    const person = await this.personFor(userId);
+    if (!person) return null;
+    const next = nextEpisodeStart(
+      await this.jellyfin.episodesFor(person, seriesId),
+    );
+    return next ?? 'end';
+  }
+
+  /** The episode they are on in a show, and the one after it. Null when
+   * they have no linked account. */
+  async whereInShow(
+    userId: string,
+    seriesId: string,
+  ): Promise<{
+    current: PersonalItem | null;
+    next: PersonalItem | null;
+    rules: ResumeRules;
+  } | null> {
+    const person = await this.personFor(userId);
+    if (!person) return null;
+    const [episodes, rules] = await Promise.all([
+      this.jellyfin.episodesFor(person, seriesId),
+      this.jellyfin.resumeRules(),
+    ]);
+    const current = currentEpisode(episodes);
+    const ordered = inOrder(episodes);
+    const next = current
+      ? (ordered[ordered.indexOf(current) + 1] ?? null)
+      : (ordered[0] ?? null);
+    return { current, next, rules };
+  }
+
+  /** A show's episodes with nobody's history — for someone with no linked
+   * account, who can still ask for a named episode or the very first. */
+  async plainEpisodes(seriesId: string): Promise<PersonalItem[]> {
+    return this.jellyfin.episodesFor(null, seriesId);
   }
 
   // --------------------------------------------------------------- admin

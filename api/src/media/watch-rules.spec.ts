@@ -1,7 +1,9 @@
 import type { PersonalItem, ResumeRules } from './jellyfin.service';
 import {
+  currentEpisode,
   episodeStart,
   inOrder,
+  nextEpisodeStart,
   resumable,
   seriesStart,
   startFor,
@@ -344,5 +346,65 @@ describe('a named episode', () => {
 
   it('has nothing when the episode does not exist', () => {
     expect(episodeStart(eps, 9, 9, 'auto', RULES)).toBeNull();
+  });
+});
+
+describe('play the next episode', () => {
+  const t = (n: number) => `2026-09-24T12:0${n}:00Z`;
+
+  it('goes one on from a part-watched episode, from the beginning', () => {
+    const s = nextEpisodeStart([
+      ep(1, 1, { played: true, lastPlayed: t(1) }),
+      ep(1, 2, { positionTicks: 10 * MIN, lastPlayed: t(2) }),
+      ep(1, 3),
+    ])!;
+    expect(s.item.id).toBe('s1e3');
+    expect(s.startSeconds).toBe(0);
+    expect(s.why).toBe('next episode');
+  });
+
+  it('goes on from the most recent, not the furthest', () => {
+    // rewatched 1x2 after finishing 1x3: the next is 1x3 again
+    const s = nextEpisodeStart([
+      ep(1, 1, { played: true, lastPlayed: t(1) }),
+      ep(1, 2, { played: true, lastPlayed: t(3) }),
+      ep(1, 3, { played: true, lastPlayed: t(2) }),
+      ep(1, 4),
+    ])!;
+    expect(s.item.id).toBe('s1e3');
+  });
+
+  it('crosses into the next season', () => {
+    const s = nextEpisodeStart([
+      ep(1, 1, { played: true, lastPlayed: t(1) }),
+      ep(2, 1),
+    ])!;
+    expect(s.item.id).toBe('s2e1');
+  });
+
+  it('does not wrap round at the end', () => {
+    expect(
+      nextEpisodeStart([
+        ep(1, 1),
+        ep(1, 2, { played: true, lastPlayed: t(1) }),
+      ]),
+    ).toBeNull();
+  });
+
+  it('never watched: the first regular episode', () => {
+    expect(nextEpisodeStart([ep(0, 1), ep(1, 1), ep(1, 2)])!.item.id).toBe(
+      's1e1',
+    );
+  });
+
+  it('ignores specials both as where they are and as where to go', () => {
+    const eps = [
+      ep(1, 1, { played: true, lastPlayed: t(1) }),
+      ep(0, 1, { played: true, lastPlayed: t(2) }),
+      ep(0, 2),
+      ep(1, 2),
+    ];
+    expect(currentEpisode(eps)!.id).toBe('s1e1');
+    expect(nextEpisodeStart(eps)!.item.id).toBe('s1e2');
   });
 });

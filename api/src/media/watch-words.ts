@@ -1,5 +1,5 @@
 // How far through something someone is, said the way a person would say
-// it. No clock times, no ticks, nothing about how a TV is reached.
+// it. No clock times, no ticks, no ids, nothing about how a TV is reached.
 
 import type { PersonalItem, ResumeRules } from './jellyfin.service';
 import { From, StartPoint, resumable, toSeconds } from './watch-rules';
@@ -15,6 +15,33 @@ export function roughly(seconds: number): string {
   return m
     ? `about ${hours} ${m} minute${m === 1 ? '' : 's'}`
     : `about ${hours}`;
+}
+
+type Numbered = { seasonNumber?: number; episodeNumber?: number };
+
+/** "Season 1 Episode 3" — or "Special 2" for season 0 */
+export function episodeLabel(e: Numbered): string {
+  if (e.seasonNumber === 0) return `Special ${e.episodeNumber ?? ''}`.trim();
+  return `Season ${e.seasonNumber ?? '?'} Episode ${e.episodeNumber ?? '?'}`;
+}
+
+/** "S1E3" */
+export function shortEpisode(e: Numbered): string {
+  return `S${e.seasonNumber ?? '?'}E${e.episodeNumber ?? '?'}`;
+}
+
+/** What to call something out loud: a film by its name, an episode by its
+ * show and number. */
+export function spokenName(i: {
+  name: string;
+  type?: string;
+  seriesName?: string;
+  seasonNumber?: number;
+  episodeNumber?: number;
+}): string {
+  return i.type === 'Episode' && i.seriesName
+    ? `${i.seriesName}, ${episodeLabel(i)}`
+    : i.name;
 }
 
 export interface HowFar {
@@ -46,11 +73,13 @@ export function startNote(p: {
   canResume: boolean;
   linked: boolean;
   from: From;
+  episode?: boolean;
 }): string {
+  const it = p.episode ? 'the episode' : 'it';
   if (!p.linked) {
     return p.from === 'resume'
       ? " I can't see where you left off — your viewing isn't linked to " +
-          "you yet — so it's starting from the beginning."
+          `you yet — so ${it}'s starting from the beginning.`
       : '';
   }
   if (!p.start) return '';
@@ -59,19 +88,34 @@ export function startNote(p: {
     case 'resuming':
       return p.canResume
         ? ` Picking up where you left off, ${at}.`
-        : ` That TV can only start from the beginning — you were ${at}.`;
+        : " That TV can't pick up part way yet, so it's starting " +
+            `${p.episode ? 'the episode' : 'the film'} from the beginning ` +
+            `— you were ${at}.`;
     case 'asked to start over':
       return ' Starting from the beginning, as asked.';
     case 'watched already, starting again':
       return p.from === 'resume'
-        ? " You finished it last time, so it's starting from the beginning."
+        ? ` You finished ${it} last time, so it's starting from the beginning.`
         : '';
     case 'nothing to resume':
       return p.start.item.played
-        ? " You finished it last time, so it's starting from the beginning."
+        ? ` You finished ${it} last time, so it's starting from the beginning.`
         : " There's nowhere to pick up from, so it's starting from the beginning.";
-
     default:
       return '';
   }
+}
+
+/** One line about one thing someone has been watching. */
+export function activityLine(i: PersonalItem, rules: ResumeRules): string {
+  const far = howFar(i, rules);
+  const what =
+    i.type === 'Episode' && i.seriesName
+      ? `${i.seriesName} — ${shortEpisode(i)}`
+      : i.name;
+  if (far.state === 'finished') return `You finished ${what}.`;
+  if (far.state === 'part way') {
+    return `You were watching ${what}. You're ${far.watched}.`;
+  }
+  return `You started ${what}.`;
 }

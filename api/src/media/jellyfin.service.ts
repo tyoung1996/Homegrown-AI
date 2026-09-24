@@ -85,6 +85,8 @@ export interface PlayableItem {
   runtimeMinutes?: number;
   posterUrl?: string;
   seriesName?: string;
+  seasonNumber?: number;
+  episodeNumber?: number;
 }
 
 // the slice of a live session this app reads
@@ -295,6 +297,8 @@ export class JellyfinService {
         : undefined,
       posterUrl: `/media/poster/${String(i.Id)}`,
       seriesName: i.SeriesName ? String(i.SeriesName) : undefined,
+      seasonNumber: i.ParentIndexNumber ?? undefined,
+      episodeNumber: i.IndexNumber ?? undefined,
     }));
   }
 
@@ -322,6 +326,8 @@ export class JellyfinService {
       type: String(i.Type ?? 'Movie'),
       container: i.MediaSources?.[0]?.Container,
       seriesName: i.SeriesName ? String(i.SeriesName) : undefined,
+      seasonNumber: i.ParentIndexNumber ?? undefined,
+      episodeNumber: i.IndexNumber ?? undefined,
     }));
   }
 
@@ -585,12 +591,15 @@ export class JellyfinService {
     return first ? this.personal(first) : null;
   }
 
-  /** Every episode of a show, in order, as this person sees them. */
-  async episodesFor(userId: string, seriesId: string): Promise<PersonalItem[]> {
+  /** Every episode of a show, in order, as this person sees them — or,
+   * with no person, with nobody's history at all. */
+  async episodesFor(
+    userId: string | null,
+    seriesId: string,
+  ): Promise<PersonalItem[]> {
     const q = new URLSearchParams({
-      userId,
+      ...(userId ? { userId, enableUserData: 'true' } : {}),
       Fields: JellyfinService.FIELDS,
-      enableUserData: 'true',
     });
     const data = await this.call<{ Items?: JellyfinItem[] }>(
       `/Shows/${seriesId}/Episodes?${q}`,

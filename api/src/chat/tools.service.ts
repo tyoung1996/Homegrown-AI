@@ -270,7 +270,9 @@ export const TOOL_DEFS = [
         'watch Harry Potter", "put on Encanto", "play The Office S03E12". It ' +
         'looks on the shelf first and tells you whether it is there. If it is ' +
         'not, it comes back with what the film or show actually is, so you ' +
-        'can offer to add it — but do NOT add anything unless they say yes.',
+        'can offer to add it — but do NOT add anything unless they say yes. ' +
+        'To continue a show, play its next episode, start it over or play a ' +
+        'named episode of a show we have, use play_show instead.',
       parameters: {
         type: 'object',
         properties: {
@@ -419,14 +421,47 @@ export const TOOL_DEFS = [
   {
     type: 'function',
     function: {
+      name: 'play_show',
+      description:
+        'Put a SHOW from the library on a TV for the person talking to you, ' +
+        'working out the episode from their own viewing. Use it for: ' +
+        '"continue The Office" / "continue my show" (action continue); ' +
+        '"play the next episode" / "next episode of The Office" (action ' +
+        'next — always the one AFTER the episode they are on, even if that ' +
+        'one is only part watched); "start The Office over" (action ' +
+        'start_over); "play The Office S03E12" or "season 3 episode 12" ' +
+        '(action episode, with season and episode; add from "start" only ' +
+        'if they asked to start that episode over). Leave show out only for ' +
+        '"continue my show" or "play the next episode" with no show named. ' +
+        'Ask which TV if they have not said. Repeat what it returns about ' +
+        'where it started — never say it picked up when it did not.',
+      parameters: {
+        type: 'object',
+        properties: {
+          show: { type: 'string', description: 'the show as they said it' },
+          tv: { type: 'string', description: 'the TV name' },
+          action: {
+            type: 'string',
+            enum: ['continue', 'next', 'start_over', 'episode'],
+          },
+          season: { type: 'number' },
+          episode: { type: 'number' },
+          from: { type: 'string', enum: ['auto', 'start'] },
+        },
+        required: ['tv', 'action'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'what_was_i_watching',
       description:
-        'The films the person talking to you is part way through, most ' +
-        'recent first, and the last few they finished. Use for "what was I ' +
-        'watching?" and for "continue my movie" — then play the first ' +
-        'part-way film with from "resume" (ask which TV if they have not ' +
-        'said). Films only for now; for shows, say you cannot keep their ' +
-        'place in a show yet.',
+        'What the person talking to you has watched lately — films and ' +
+        'shows together, most recent first, each with a ready-made line. ' +
+        'Use for "what was I watching?". For "continue my movie", play the ' +
+        'most recent film that is part way with play_on_tv and from ' +
+        '"resume"; for "continue my show", use play_show instead.',
       parameters: { type: 'object', properties: {} },
     },
   },
@@ -435,13 +470,16 @@ export const TOOL_DEFS = [
     function: {
       name: 'how_far_into',
       description:
-        'How far the person talking to you is through one film: "how far ' +
-        'am I into Jaws?". Find the film with find_something_to_watch ' +
-        'first and pass its id.',
+        'How far the person talking to you is through a film or a show: ' +
+        '"how far am I into Jaws?", "where am I up to in The Office?". For ' +
+        'a show, pass its name as show. For a film, find it with ' +
+        'find_something_to_watch first and pass its itemId.',
       parameters: {
         type: 'object',
-        properties: { itemId: { type: 'string' } },
-        required: ['itemId'],
+        properties: {
+          itemId: { type: 'string' },
+          show: { type: 'string' },
+        },
       },
     },
   },
