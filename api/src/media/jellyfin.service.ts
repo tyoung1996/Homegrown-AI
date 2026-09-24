@@ -26,6 +26,7 @@ interface JellyfinItem {
   SeriesName?: string;
   MediaSources?: { Container?: string }[];
   ProviderIds?: { Tmdb?: string };
+  Path?: string;
 }
 
 export interface LibraryItem {
@@ -291,13 +292,23 @@ export class JellyfinService {
   }
 
   /**
-   * The film itself, fetched from Jellyfin with the key in a header where it
-   * belongs. Jellyfin no longer accepts a key in the query string, and a TV
-   * cannot send headers, so the app fetches on the TV's behalf and passes
-   * the bytes along.
-   *
-   * The range header is forwarded both ways, so seeking still works and a
-   * TV can ask for the middle of a film without being sent the start of it.
+   * Where the file actually is. The library is a folder on this server, so
+   * the app can hand a TV the bytes itself rather than asking Jellyfin to
+   * do it — one less service in the path, and nothing that breaks when
+   * Jellyfin changes which of its urls it will answer.
+   */
+  async filePath(itemId: string): Promise<string | null> {
+    const data = await this.call<{ Items?: JellyfinItem[] }>(
+      `/Items?Ids=${itemId}&Fields=Path&Recursive=true`,
+    );
+    const path = data?.Items?.[0]?.Path;
+    return path ? String(path) : null;
+  }
+
+  /**
+   * Kept for anything that would rather Jellyfin served the file. Note that
+   * a key in the query string is refused by current versions, and media
+   * endpoints want a user context an API key does not carry.
    */
   async stream(
     itemId: string,
