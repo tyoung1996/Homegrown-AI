@@ -156,6 +156,7 @@ model MediaRequest {
   status        MediaStatus @default(REQUESTED)
   statusNote    String?     // one plain line for the family
   adminNote     String?     // the technical why, for the admin panel only
+  retryAfter    DateTime?   // when an automatic provider may be asked again
   source        String?     // which acquisition provider picked it up
   sourceRef     String?     // that provider's own id for it, for correlation
   filePath      String?     // where it ended up in the library

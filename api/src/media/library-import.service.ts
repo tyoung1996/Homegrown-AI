@@ -17,6 +17,7 @@ import {
   MOVIES_SUBDIR,
   SHOWS_SUBDIR,
 } from './paths';
+import { libraryWritable } from './storage';
 import {
   VIDEO_EXTENSIONS,
   episodeTarget,
@@ -39,6 +40,8 @@ export class LibraryImportService implements OnModuleInit, OnModuleDestroy {
   private seen = new Map<string, { size: number; at: number }>();
   private inflight: Promise<{ imported: string[]; waiting: string[] }> | null =
     null;
+  // said once when the library goes missing, and once when it comes back
+  private libraryDown: string | null = null;
 
   constructor(
     private media: MediaService,
@@ -78,6 +81,29 @@ export class LibraryImportService implements OnModuleInit, OnModuleDestroy {
   }> {
     const imported: string[] = [];
     const waiting: string[] = [];
+
+    // with the library drive missing, the library folder is an empty folder
+    // on the system disk. writing there — even creating the drop folder —
+    // is exactly the mess this is here to prevent, so the sweep does only
+    // the one thing that reads rather than writes: asking Jellyfin
+    const disk = libraryWritable();
+    if (!disk.ok) {
+      if (this.libraryDown !== disk.why) {
+        this.log.error(`library not writable, importing paused: ${disk.why}`);
+        this.libraryDown = disk.why ?? 'unavailable';
+      }
+      await this.media
+        .confirmImported()
+        .catch((e: unknown) =>
+          this.log.warn(`confirming failed: ${(e as Error).message}`),
+        );
+      return { imported, waiting };
+    }
+    if (this.libraryDown) {
+      this.log.log('library is back; importing resumed');
+      this.libraryDown = null;
+    }
+
     await fs.mkdir(DROPBOX_DIR, { recursive: true });
     for (const file of await this.videoFiles(DROPBOX_DIR)) {
       const stat = await fs.stat(file).catch(() => null);
@@ -98,11 +124,13 @@ export class LibraryImportService implements OnModuleInit, OnModuleDestroy {
       this.seen.delete(file);
     }
     if (imported.length) await this.jellyfin.refreshLibrary();
-    // anything nobody could take on when it was asked for gets another go
+    // anything waiting is offered to a provider that could fetch it
     await this.media
-      .retryUnclaimed()
+      .reconsiderWaiting()
       .catch((e: unknown) =>
-        this.log.warn(`retrying unclaimed failed: ${(e as Error).message}`),
+        this.log.warn(
+          `reconsidering waiting requests failed: ${(e as Error).message}`,
+        ),
       );
     // providers working in the background get asked how they are doing
     await this.media

@@ -312,3 +312,31 @@ describe('the watched folder still works', () => {
     expect(out.status).not.toBe(MediaStatus.AVAILABLE);
   });
 });
+
+describe('the watched folder with its drive missing', () => {
+  afterEach(() => {
+    delete process.env.MEDIA_MOUNT;
+    delete process.env.MEDIA_MOUNTS_FILE;
+  });
+
+  it('is unavailable, and does not create its folder on the system disk', async () => {
+    const fsp = require('fs').promises;
+    const os = require('os');
+    const path = require('path');
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'cb-drop-'));
+    const mounts = path.join(root, 'mounts');
+    await fsp.writeFile(mounts, '/dev/sdb2 / ext4 rw 0 0\n');
+    process.env.MEDIA_ROOT = root;
+    process.env.MEDIA_DROPBOX = path.join(root, '_incoming');
+    process.env.MEDIA_MOUNT = root;
+    process.env.MEDIA_MOUNTS_FILE = mounts;
+    jest.resetModules();
+    const { DropFolderSource: Fresh } = require('./acquisition');
+
+    expect(await new Fresh().available()).toBe(false);
+    expect(
+      await fsp.stat(path.join(root, '_incoming')).catch(() => null),
+    ).toBeNull();
+    await fsp.rm(root, { recursive: true, force: true });
+  });
+});

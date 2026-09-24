@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { promises as fs } from 'fs';
 import { MediaKind, MediaRequest, MediaStatus } from '@prisma/client';
 import { DROPBOX_DIR } from './paths';
+import { libraryWritable } from './storage';
 
 /**
  * How a request turns into a file.
@@ -40,6 +41,9 @@ export interface ProviderResult {
   note: string;
   /** the provider's own id for this, so it can recognise it again later */
   ref?: string;
+  /** what actually went wrong, for the admin panel. never shown to the
+   * family, and never needed to be — the note is for them */
+  detail?: string;
 }
 
 export interface ProviderHealth {
@@ -120,6 +124,9 @@ export class DropFolderSource implements AcquisitionSource {
   }
 
   async available(): Promise<boolean> {
+    // not before the drive is really there — the mkdir below would
+    // otherwise quietly create the drop folder on the system disk
+    if (!libraryWritable().ok) return false;
     try {
       await fs.mkdir(DROPBOX_DIR, { recursive: true });
       return true;
@@ -138,6 +145,8 @@ export class DropFolderSource implements AcquisitionSource {
   }
 
   async health(): Promise<{ ok: boolean; detail?: string }> {
+    const disk = libraryWritable();
+    if (!disk.ok) return { ok: false, detail: disk.why };
     return (await this.available())
       ? { ok: true }
       : { ok: false, detail: `Cannot use ${DROPBOX_DIR}` };
@@ -215,6 +224,49 @@ export class AcquisitionRegistry {
     return null;
   }
 
+  /**
+   * Find a provider that will actually take this on. Providers are asked in
+   * the usual order — ones that fetch before ones that wait — and one that
+   * declines is not the end of it: the next is asked, down to the watched
+   * folder, which never declines. So a film nothing can fetch still lands
+   * on the list rather than being written off.
+   *
+   * `automaticOnly` asks only providers that fetch — for offering a request
+   * that is already waiting on the folder to something better.
+   */
+  async claim(
+    kind: MediaKind,
+    request: MediaRequest,
+    opts: { automaticOnly?: boolean; exclude?: string[] } = {},
+  ): Promise<{
+    source: AcquisitionSource | null;
+    result: ProviderResult | null;
+    declined: { name: string; detail: string }[];
+  }> {
+    const skip = new Set((opts.exclude ?? []).map((n) => n.toLowerCase()));
+    const capable = this.capableOf(kind).filter(
+      (s) => !skip.has(s.name.toLowerCase()),
+    );
+    const order = [
+      ...capable.filter((s) => s.automatic),
+      ...(opts.automaticOnly ? [] : capable.filter((s) => !s.automatic)),
+    ];
+    const declined: { name: string; detail: string }[] = [];
+    for (const source of order) {
+      if (!(await this.isUp(source))) continue;
+      const result = await this.handOff(source, request);
+      if (result.status === MediaStatus.UNAVAILABLE) {
+        declined.push({
+          name: source.name,
+          detail: result.detail ?? result.note,
+        });
+        continue;
+      }
+      return { source, result, declined };
+    }
+    return { source: null, result: null, declined };
+  }
+
   /** Could anything fetch this sort of thing by itself right now? The
    * answer the admin panel wants, and nothing the family needs to know. */
   async canFetch(kind: MediaKind): Promise<boolean> {
@@ -253,6 +305,7 @@ export class AcquisitionRegistry {
       return {
         status: MediaStatus.UNAVAILABLE,
         note: "Couldn't add it — nothing could take it on just now.",
+        detail: `${source.name} threw: ${(e as Error).message}`,
       };
     }
     return this.vet(source, result);

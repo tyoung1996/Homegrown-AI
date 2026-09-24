@@ -34,7 +34,7 @@ function services(match: any = null) {
     // after every pass
     confirmImported: jest.fn(async () => []),
     pollProviders: jest.fn(async () => 0),
-    retryUnclaimed: jest.fn(async () => 0),
+    reconsiderWaiting: jest.fn(async () => 0),
   };
   const jellyfin = { refreshLibrary: jest.fn(async () => undefined) };
   return { media, jellyfin };
@@ -166,5 +166,61 @@ describe('LibraryImportService', () => {
 
     expect(await fs.readFile(dest, 'utf8')).toBe('the copy we already had');
     expect(media.markImported).toHaveBeenCalled();
+  });
+});
+
+describe('with the library drive missing', () => {
+  // the drive is expected at the library root, and the mount table says it
+  // is not there — the state the server booted into that night
+  const unmount = async () => {
+    const mounts = path.join(root, 'mounts');
+    await fs.writeFile(mounts, '/dev/sdb2 / ext4 rw 0 0\n');
+    process.env.MEDIA_MOUNT = root;
+    process.env.MEDIA_MOUNTS_FILE = mounts;
+    jest.resetModules();
+    LibraryImportService =
+      require('./library-import.service').LibraryImportService;
+  };
+  afterEach(() => {
+    delete process.env.MEDIA_MOUNT;
+    delete process.env.MEDIA_MOUNTS_FILE;
+  });
+
+  it('does not create the drop folder on the system disk', async () => {
+    await fs.rm(dropbox, { recursive: true, force: true });
+    await unmount();
+    const { media, jellyfin } = services();
+    const svc = new LibraryImportService(media, jellyfin);
+
+    await svc.sweep();
+
+    expect(await exists(dropbox)).toBe(false);
+  });
+
+  it('files nothing, even with a file sitting there', async () => {
+    const file = await drop('Interstellar.2014.1080p.mkv');
+    await unmount();
+    const { media, jellyfin } = services();
+    const svc = new LibraryImportService(media, jellyfin);
+
+    await svc.sweep();
+    await svc.sweep();
+
+    expect(await exists(file)).toBe(true);
+    expect(await exists(path.join(root, 'Movies'))).toBe(false);
+    expect(media.markImported).not.toHaveBeenCalled();
+    // and nothing else that might write is started either
+    expect(media.pollProviders).not.toHaveBeenCalled();
+    expect(media.reconsiderWaiting).not.toHaveBeenCalled();
+  });
+
+  it('still asks Jellyfin about what is already filed, which only reads', async () => {
+    await unmount();
+    const { media, jellyfin } = services();
+    const svc = new LibraryImportService(media, jellyfin);
+
+    await svc.sweep();
+
+    expect(media.confirmImported).toHaveBeenCalled();
   });
 });

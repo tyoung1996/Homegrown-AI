@@ -60,8 +60,8 @@ export class MediaController {
   ) {}
 
   @Get('health')
-  health() {
-    return this.media.health();
+  health(@Req() req: AuthedRequest) {
+    return this.media.health(req.user.role);
   }
 
   @Get('search')

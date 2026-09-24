@@ -739,9 +739,12 @@ describe('when the way files arrive is having a bad day', () => {
     expect(rows).toHaveLength(1);
     expect(outcome.result).toBe('queued');
     if (outcome.result === 'queued') {
-      expect(outcome.request.status).toBe(MediaStatus.UNAVAILABLE);
-      expect(outcome.request.statusNote).toMatch(/nothing could take it on/i);
+      // still on the list; the crash is the admin's business, not theirs
+      expect(outcome.request.status).toBe(MediaStatus.REQUESTED);
+      expect(outcome.request.statusText).toBe('On the list');
     }
+    expect(rows[0].adminNote).toMatch(/threw: the provider is offline/);
+    expect(rows[0].retryAfter).toBeInstanceOf(Date);
   });
 
   it('still takes the request when there is no provider at all', async () => {
@@ -985,7 +988,7 @@ describe('with every provider down', () => {
   it('reports itself unhealthy without taking anything else down', async () => {
     const { service } = build({ providers: [dead] });
 
-    const health = await service.health();
+    const health = (await service.health(Role.ADMIN)) as any;
 
     expect(health.app.ok).toBe(true);
     expect(health.acquisition.ok).toBe(false);
@@ -1085,7 +1088,7 @@ describe('anything in the catalogue can be asked for', () => {
       providers: [fetcher([MediaKind.MOVIE])],
       rows,
     });
-    const claimed = await later.retryUnclaimed();
+    const claimed = await later.reconsiderWaiting();
 
     expect(claimed).toBe(1);
     expect(rows[0].source).toBe('fetcher');
@@ -1107,5 +1110,235 @@ describe('anything in the catalogue can be asked for', () => {
       expect(found.films[0].title).toBe('Oppenheimer');
     }
     expect(await service.searchMovies('Oppenheimer')).toHaveLength(1);
+  });
+});
+
+describe('a request moving to a better provider', () => {
+  // the folder: waits for a file, never declines, holds no state
+  const folder = (): AcquisitionSource => ({
+    name: 'drop-folder',
+    label: 'Watched folder',
+    automatic: false,
+    supports: () => true,
+    available: async () => true,
+    start: async () => ({
+      status: MediaStatus.REQUESTED,
+      note: 'On the list — it will appear here once the file is added.',
+    }),
+  });
+  // a fetcher that can be switched on, made to decline, or made to fail
+  const fetcher = (
+    name: string,
+    opts: {
+      up?: () => boolean;
+      decline?: boolean;
+      poll?: ProviderResult | null;
+    } = {},
+  ): AcquisitionSource & { starts: number } => {
+    const f = {
+      name,
+      label: name,
+      automatic: true,
+      starts: 0,
+      supports: (k: MediaKind) => k === MediaKind.MOVIE,
+      available: async () => (opts.up ? opts.up() : true),
+      start: async () => {
+        f.starts++;
+        return opts.decline
+          ? {
+              status: MediaStatus.UNAVAILABLE,
+              note: "Couldn't add it",
+              detail: 'no approved copy',
+            }
+          : {
+              status: MediaStatus.ACQUIRING,
+              note: 'Adding it to the library',
+              ref: `${name}-ref`,
+            };
+      },
+      poll: async () => opts.poll ?? null,
+    };
+    return f;
+  };
+
+  it('moves from the folder to a fetcher that comes online later', async () => {
+    let online = false;
+    const archive = fetcher('archive', { up: () => online });
+    const { service, rows } = build({ providers: [archive, folder()] });
+
+    await service.requestMovies('u1', [157336]);
+    expect(rows[0].source).toBe('drop-folder');
+    expect(rows[0].status).toBe(MediaStatus.REQUESTED);
+
+    online = true;
+    expect(await service.reconsiderWaiting()).toBe(1);
+
+    expect(rows[0].source).toBe('archive');
+    expect(rows[0].status).toBe(MediaStatus.ACQUIRING);
+    expect(rows[0].sourceRef).toBe('archive-ref');
+    expect(rows[0].adminNote).toMatch(/moved from drop-folder/);
+  });
+
+  it('leaves a working fetcher alone when another one appears', async () => {
+    const first = fetcher('first');
+    let secondUp = false;
+    const second = fetcher('second', { up: () => secondUp });
+    const { service, rows } = build({ providers: [first, second, folder()] });
+
+    await service.requestMovies('u1', [157336]);
+    expect(rows[0].source).toBe('first');
+
+    secondUp = true;
+    await service.reconsiderWaiting();
+
+    expect(rows[0].source).toBe('first');
+    expect(rows[0].sourceRef).toBe('first-ref');
+    expect(second.starts).toBe(0);
+  });
+
+  it('never starts a second copy by promoting twice', async () => {
+    let online = false;
+    const archive = fetcher('archive', { up: () => online });
+    const { service } = build({ providers: [archive, folder()] });
+    await service.requestMovies('u1', [157336]);
+
+    online = true;
+    await service.reconsiderWaiting();
+    await service.reconsiderWaiting();
+    await service.reconsiderWaiting();
+
+    expect(archive.starts).toBe(1);
+  });
+
+  it('falls back to the folder when a fetcher declines, instead of failing', async () => {
+    // the bug behind the stuck Little Mermaid requests
+    const archive = fetcher('archive', { decline: true });
+    const { service, rows } = build({ providers: [archive, folder()] });
+
+    const [outcome] = await service.requestMovies('u1', [157336]);
+
+    expect(rows[0].source).toBe('drop-folder');
+    expect(rows[0].status).toBe(MediaStatus.REQUESTED);
+    if (outcome.result === 'queued') {
+      expect(outcome.request.statusText).toBe('On the list');
+    }
+    expect(rows[0].adminNote).toMatch(/archive declined: no approved copy/);
+  });
+
+  it('does not ask a fetcher that declined again until the window has passed', async () => {
+    const archive = fetcher('archive', { decline: true });
+    const { service, rows } = build({ providers: [archive, folder()] });
+    await service.requestMovies('u1', [157336]);
+    expect(archive.starts).toBe(1);
+
+    await service.reconsiderWaiting();
+    await service.reconsiderWaiting();
+    expect(archive.starts).toBe(1);
+
+    // the window passes
+    rows[0].retryAfter = new Date(Date.now() - 1000);
+    await service.reconsiderWaiting();
+    expect(archive.starts).toBe(2);
+  });
+
+  it('puts a failed fetch back on the list rather than writing it off', async () => {
+    const archive = fetcher('archive', {
+      poll: {
+        status: MediaStatus.UNAVAILABLE,
+        note: "Couldn't add it",
+        detail: 'incomplete: 8 of 64 bytes',
+      },
+    });
+    const { service, rows } = build({ providers: [archive, folder()] });
+    await service.requestMovies('u1', [157336]);
+    expect(rows[0].status).toBe(MediaStatus.ACQUIRING);
+
+    await service.pollProviders();
+
+    expect(rows[0].status).toBe(MediaStatus.REQUESTED);
+    expect(rows[0].source).toBe('drop-folder');
+    expect(rows[0].sourceRef).toBeNull();
+    expect(rows[0].adminNote).toMatch(/archive failed: incomplete/);
+    expect(rows[0].retryAfter).toBeInstanceOf(Date);
+    // not straight back to the one that just failed
+    expect(archive.starts).toBe(1);
+  });
+
+  it('never touches something already ready to watch', async () => {
+    const archive = fetcher('archive');
+    const { service, rows } = build({
+      providers: [archive, folder()],
+      rows: [
+        {
+          id: 'done',
+          kind: MediaKind.MOVIE,
+          catalogId: 1,
+          title: 'x',
+          label: 'x',
+          status: MediaStatus.AVAILABLE,
+          source: 'drop-folder',
+        },
+      ],
+    });
+
+    await service.reconsiderWaiting();
+    await service.pollProviders();
+
+    expect(rows[0].status).toBe(MediaStatus.AVAILABLE);
+    expect(archive.starts).toBe(0);
+  });
+
+  it('picks up after a restart from what is stored, not what was in memory', async () => {
+    let online = false;
+    const { service, rows } = build({
+      providers: [fetcher('archive', { up: () => online }), folder()],
+    });
+    await service.requestMovies('u1', [157336]);
+
+    // a fresh process, same database, the fetcher now working
+    online = true;
+    const fresh = fetcher('archive');
+    const { service: restarted } = build({
+      providers: [fresh, folder()],
+      rows,
+    });
+    await restarted.reconsiderWaiting();
+
+    expect(rows[0].source).toBe('archive');
+    expect(fresh.starts).toBe(1);
+
+    // and a second restart does not start it again
+    const { service: again } = build({ providers: [fresh, folder()], rows });
+    await again.reconsiderWaiting();
+    expect(fresh.starts).toBe(1);
+  });
+});
+
+describe('who gets to see what is wrong', () => {
+  it.each([Role.ADULT, Role.CHILD, undefined])(
+    'shows %s only whether search works, nothing technical',
+    async (role) => {
+      const { service } = build({});
+
+      const family = await service.health(role);
+
+      expect(Object.keys(family).sort()).toEqual([
+        'catalog',
+        'jellyfin',
+        'ready',
+      ]);
+      expect(JSON.stringify(family)).not.toMatch(
+        /storage|acquisition|provider|mount|drive|incoming|detail/i,
+      );
+    },
+  );
+
+  it('shows an admin the library drive and the providers', async () => {
+    const { service } = build({});
+
+    const admin = (await service.health(Role.ADMIN)) as any;
+
+    expect(admin.storage).toBeDefined();
+    expect(admin.acquisition).toBeDefined();
   });
 });

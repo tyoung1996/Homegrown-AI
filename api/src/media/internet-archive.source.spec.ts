@@ -435,8 +435,11 @@ describe('fetching it', () => {
     expect(out?.status).toBe(MediaStatus.IMPORTING);
     expect(out?.note).toBe('Almost ready');
     expect(await listDrop()).toEqual(['Night of the Living Dead (1968).mp4']);
-    // and nothing left behind in the work folder
-    expect(await fs.readdir(work)).toEqual([]);
+    // nothing left in the work folder but the note that says it was handed
+    // over, which is what stops a crash from starting the download again
+    const left = await fs.readdir(work);
+    expect(left).toHaveLength(1);
+    expect(left[0]).toMatch(/\.handoff$/);
   });
 
   it('never says something is ready to watch', async () => {
@@ -491,12 +494,14 @@ describe('fetching it', () => {
     expect(await listDrop()).toEqual(['Night of the Living Dead (1968).mp4']);
   });
 
-  it('has nothing to say about a request it never took on', async () => {
+  it('fails safe on a reference it cannot read, rather than ignoring it', async () => {
     archive(ok);
-    expect(await new Source().poll(request())).toBeNull();
-    expect(
-      await new Source().poll(request({ sourceRef: 'rubbish' })),
-    ).toBeNull();
+    for (const sourceRef of [null, 'rubbish', '{"file":"only"}']) {
+      const out = await new Source().poll(request({ sourceRef }));
+      expect(out?.status).toBe(MediaStatus.UNAVAILABLE);
+      expect(out?.detail).toMatch(/unreadable/);
+    }
+    expect(await listDrop()).toEqual([]);
   });
 
   it('gets a whole film through, not just the first few hundred kilobytes', async () => {
@@ -544,5 +549,246 @@ describe('fetching it', () => {
 
     expect(job.total).toBe(64);
     expect(job.received).toBe(64);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// the invariant: nothing reaches the drop folder unless it has been verified
+
+describe('nothing reaches the drop folder unverified', () => {
+  const SIZE = 64;
+  const ok = {
+    docs: [
+      {
+        identifier: 'notld',
+        title: 'Night of the Living Dead',
+        year: '1968',
+        licenseurl: PD,
+      },
+    ],
+    files: [{ name: 'notld.mp4', size: String(SIZE) }],
+  };
+  const ref = (over: Record<string, unknown> = {}) =>
+    JSON.stringify({ id: 'notld', file: 'notld.mp4', size: SIZE, ...over });
+  const stem = () => path.join(work, 'notld__notld.mp4');
+  const put = async (suffix: string, bytes: number) => {
+    await fs.mkdir(work, { recursive: true });
+    await fs.writeFile(`${stem()}${suffix}`, Buffer.alloc(bytes, 3));
+  };
+  const downloads = () =>
+    (global.fetch as jest.Mock).mock.calls.filter((c) =>
+      String(c[0]).includes('/download/'),
+    ).length;
+
+  it('restarts from nothing after a restart at 0 bytes', async () => {
+    archive(ok);
+    await put('.part', 0);
+    const fresh = new Source();
+
+    expect(await fresh.poll(request({ sourceRef: ref() }))).toBeNull();
+    expect(await listDrop()).toEqual([]);
+    await settle();
+    expect(downloads()).toBe(1);
+  });
+
+  it('never imports a partial file left by a restart, and starts over', async () => {
+    archive(ok);
+    await put('.part', SIZE / 2);
+    const fresh = new Source();
+
+    // the old in-memory job is gone; the half file must not be taken as done
+    expect(await fresh.poll(request({ sourceRef: ref() }))).toBeNull();
+    expect(await listDrop()).toEqual([]);
+
+    await settle();
+    const out = await fresh.poll(request({ sourceRef: ref() }));
+    expect(out?.status).toBe(MediaStatus.IMPORTING);
+    const [landed] = await listDrop();
+    expect((await fs.stat(path.join(dropbox, landed))).size).toBe(SIZE);
+  });
+
+  it('does not trust a .part even when it happens to be the right size', async () => {
+    // the right number of bytes in a .part is a coincidence, not a
+    // verification — only .done means the download finished and was checked
+    archive(ok);
+    await put('.part', SIZE);
+    const fresh = new Source();
+
+    expect(await fresh.poll(request({ sourceRef: ref() }))).toBeNull();
+    expect(await listDrop()).toEqual([]);
+  });
+
+  it('hands over a verified file found after a restart', async () => {
+    archive(ok);
+    await put('.done', SIZE);
+
+    const out = await new Source().poll(request({ sourceRef: ref() }));
+
+    expect(out?.status).toBe(MediaStatus.IMPORTING);
+    expect(await listDrop()).toEqual(['Night of the Living Dead (1968).mp4']);
+    expect(downloads()).toBe(0);
+  });
+
+  it('refuses a download that arrives short', async () => {
+    archive({ ...ok, truncate: true });
+    const source = new Source();
+    const started = await source.start(request());
+    await settle();
+
+    const out = await source.poll(request({ sourceRef: started.ref }));
+
+    expect(out?.status).toBe(MediaStatus.UNAVAILABLE);
+    expect(out?.detail).toMatch(/incomplete/);
+    expect(await listDrop()).toEqual([]);
+  });
+
+  it('refuses a download that keeps coming past the expected size', async () => {
+    // the item says 64 bytes; the server sends 200 and claims nothing
+    archive({ ...ok, body: Buffer.alloc(200, 1) });
+    (global.fetch as jest.Mock).mockImplementation(
+      ((orig) => async (url: any, init: any) => {
+        const res = await orig(url, init);
+        if (String(url).includes('/download/'))
+          res.headers = { get: () => null };
+        return res;
+      })((global.fetch as jest.Mock).getMockImplementation()!),
+    );
+    const source = new Source();
+    const started = await source.start(request());
+    await settle();
+
+    const out = await source.poll(request({ sourceRef: started.ref }));
+
+    expect(out?.status).toBe(MediaStatus.UNAVAILABLE);
+    expect(out?.detail).toMatch(/more than the expected/);
+    expect(await listDrop()).toEqual([]);
+  });
+
+  it('refuses when the server announces a different size from the item', async () => {
+    archive({ ...ok, body: Buffer.alloc(100, 1) });
+    const source = new Source();
+    const started = await source.start(request());
+    await settle();
+
+    const out = await source.poll(request({ sourceRef: started.ref }));
+
+    expect(out?.status).toBe(MediaStatus.UNAVAILABLE);
+    expect(out?.detail).toMatch(/sending 100 bytes/);
+    expect(await listDrop()).toEqual([]);
+  });
+
+  it('discards a finished file that is not the size it should be', async () => {
+    archive(ok);
+    await put('.done', SIZE + 10);
+
+    const out = await new Source().poll(request({ sourceRef: ref() }));
+
+    expect(out?.status).toBe(MediaStatus.UNAVAILABLE);
+    expect(out?.detail).toMatch(/expected 64/);
+    expect(await listDrop()).toEqual([]);
+    expect(await fs.readdir(work)).toEqual([]);
+  });
+
+  it('will not start a download it could not verify', async () => {
+    archive({ ...ok, files: [{ name: 'notld.mp4' }] });
+
+    const out = await new Source().start(request());
+
+    expect(out.status).toBe(MediaStatus.UNAVAILABLE);
+    expect(out.detail).toMatch(/no listed size/);
+    expect(downloads()).toBe(0);
+  });
+
+  it('fails safe on a reference with no size in it', async () => {
+    archive(ok);
+    const out = await new Source().poll(
+      request({ sourceRef: ref({ size: 0 }) }),
+    );
+
+    expect(out?.status).toBe(MediaStatus.UNAVAILABLE);
+    expect(out?.detail).toMatch(/no expected size/);
+    expect(downloads()).toBe(0);
+  });
+
+  it('finishes the job after a crash just before the move', async () => {
+    // verified and marked for handover, then the process died
+    archive(ok);
+    await put('.done', SIZE);
+    await fs.writeFile(`${stem()}.handoff`, '{}');
+
+    const out = await new Source().poll(request({ sourceRef: ref() }));
+
+    expect(out?.status).toBe(MediaStatus.IMPORTING);
+    expect(await listDrop()).toEqual(['Night of the Living Dead (1968).mp4']);
+    expect(downloads()).toBe(0);
+  });
+
+  it('does not download again after a crash just after the move', async () => {
+    // moved into the drop folder, but nobody was told before the crash
+    archive(ok);
+    await fs.mkdir(work, { recursive: true });
+    await fs.writeFile(`${stem()}.handoff`, '{}');
+    await fs.writeFile(
+      path.join(dropbox, 'Night of the Living Dead (1968).mp4'),
+      Buffer.alloc(SIZE, 3),
+    );
+
+    const out = await new Source().poll(request({ sourceRef: ref() }));
+    await settle();
+
+    expect(out?.status).toBe(MediaStatus.IMPORTING);
+    expect(downloads()).toBe(0);
+    expect(await listDrop()).toEqual(['Night of the Living Dead (1968).mp4']);
+  });
+
+  it('never says ready to watch, whatever state it finds', async () => {
+    for (const setup of [
+      () => put('.done', SIZE),
+      () => put('.part', SIZE / 2),
+      () => fs.writeFile(`${stem()}.handoff`, '{}'),
+    ]) {
+      await fs.rm(work, { recursive: true, force: true });
+      await fs.mkdir(work, { recursive: true });
+      archive(ok);
+      await setup();
+      const out = await new Source().poll(request({ sourceRef: ref() }));
+      expect(out?.status).not.toBe(MediaStatus.AVAILABLE);
+      // a restarted download runs on in the background; let it finish
+      // before the next case clears the folder out from under it
+      await settle();
+    }
+  });
+});
+
+describe('the archive provider with its drive missing', () => {
+  afterEach(() => {
+    delete process.env.MEDIA_MOUNT;
+    delete process.env.MEDIA_MOUNTS_FILE;
+  });
+
+  it('pauses a finished job rather than moving it or giving up on it', async () => {
+    await fs.mkdir(work, { recursive: true });
+    await fs.writeFile(
+      path.join(work, 'notld__notld.mp4.done'),
+      Buffer.alloc(64, 3),
+    );
+    const mounts = path.join(root, 'mounts');
+    await fs.writeFile(mounts, '/dev/sdb2 / ext4 rw 0 0\n');
+    process.env.MEDIA_MOUNT = root;
+    process.env.MEDIA_MOUNTS_FILE = mounts;
+    jest.resetModules();
+    const Fresh = require('./internet-archive.source').InternetArchiveSource;
+    archive({});
+
+    const out = await new Fresh().poll(
+      request({
+        sourceRef: JSON.stringify({ id: 'notld', file: 'notld.mp4', size: 64 }),
+      }),
+    );
+
+    expect(out).toBeNull();
+    expect(await listDrop()).toEqual([]);
+    expect(await fs.readdir(work)).toEqual(['notld__notld.mp4.done']);
+    expect(await new Fresh().available()).toBe(false);
   });
 });

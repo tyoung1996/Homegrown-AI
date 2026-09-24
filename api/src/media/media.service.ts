@@ -22,6 +22,7 @@ import {
   SeriesAvailability,
 } from './availability';
 import { parseEpisodeRef, titleGuesses, titleOf } from './query';
+import { StorageHealth, storageHealth } from './storage';
 import { titlesMatch } from './filename';
 
 // what the family sees for each stage — no jargon anywhere in here
@@ -118,26 +119,61 @@ export class MediaService {
    * part's failure — the app answering at all is itself the first line, and
    * nothing here can take the rest of it with them.
    */
-  async health() {
-    const [catalog, jellyfin, providers, screens, waiting] = await Promise.all([
-      this.catalog.health().catch((e: Error) => ({
-        configured: true,
-        ok: false,
-        detail: e.message,
-      })),
-      this.jellyfin.health().catch((e: Error) => ({
-        configured: true,
-        ok: false,
-        detail: e.message,
-      })),
-      this.sources.report().catch((): ProviderHealth[] => []),
-      this.screens.list().catch((): Screen[] => []),
-      this.prisma.mediaRequest
-        .count({ where: { status: { in: OPEN_STATUSES } } })
-        .catch(() => 0),
-    ]);
+  async health(role?: Role) {
+    // the family page only needs to know whether search works and what the
+    // library is called; drives, providers and diagnostics are for admins
+    if (role !== Role.ADMIN) {
+      const [catalog, jellyfin] = await Promise.all([
+        this.catalog.health().catch(() => ({ configured: true, ok: false })),
+        this.jellyfin.health().catch(() => ({ configured: true, ok: false })),
+      ]);
+      return {
+        catalog: { configured: catalog.configured, ok: catalog.ok },
+        jellyfin: {
+          configured: jellyfin.configured,
+          ok: jellyfin.ok,
+          ...('name' in jellyfin && jellyfin.name
+            ? { name: jellyfin.name }
+            : {}),
+        },
+        ready: jellyfin.ok,
+      };
+    }
+    return this.adminHealth();
+  }
+
+  private async adminHealth() {
+    const [catalog, jellyfin, providers, screens, waiting, storage] =
+      await Promise.all([
+        this.catalog.health().catch((e: Error) => ({
+          configured: true,
+          ok: false,
+          detail: e.message,
+        })),
+        this.jellyfin.health().catch((e: Error) => ({
+          configured: true,
+          ok: false,
+          detail: e.message,
+        })),
+        this.sources.report().catch((): ProviderHealth[] => []),
+        this.screens.list().catch((): Screen[] => []),
+        this.prisma.mediaRequest
+          .count({ where: { status: { in: OPEN_STATUSES } } })
+          .catch(() => 0),
+        storageHealth().catch((e: Error): StorageHealth => ({
+          ok: false,
+          state: 'missing',
+          mountPoint: null,
+          movies: false,
+          shows: false,
+          incoming: false,
+          incomingWritable: false,
+          detail: e.message,
+        })),
+      ]);
     return {
       app: { ok: true },
+      storage,
       catalog,
       jellyfin,
       // the family never sees any of this; the admin panel does
@@ -557,17 +593,10 @@ export class MediaService {
     // can go and fetch it today. a request nobody can fetch stays on the
     // list, because that is what it is: wanted, and not here yet. saying
     // "couldn't add it" would be a lie about the future.
-    const source = await this.sources.pickFor(kind);
-    const updated = source
-      ? await this.applySource(
-          created,
-          source.name,
-          await this.sources.handOff(source, created),
-          source.automatic
-            ? undefined
-            : 'No automatic source for this — waiting for a file.',
-        )
-      : await this.shelve(created);
+    const updated = await this.settle(
+      created,
+      await this.sources.claim(kind, created),
+    );
 
     this.log.log(`requested ${label} (${updated.status})`);
     return { result: 'queued', label, request: this.view(updated, userId) };
@@ -578,6 +607,7 @@ export class MediaService {
     source: string,
     outcome: ProviderResult,
     adminNote?: string,
+    retryAfter?: Date | null,
   ) {
     return this.prisma.mediaRequest.update({
       where: { id: request.id },
@@ -585,56 +615,143 @@ export class MediaService {
         status: outcome.status,
         statusNote: outcome.note,
         source,
-        adminNote: adminNote ?? null,
+        adminNote: adminNote ?? outcome.detail ?? null,
+        ...(retryAfter !== undefined ? { retryAfter } : {}),
         ...(outcome.ref ? { sourceRef: outcome.ref } : {}),
       },
       include: { user: { select: { displayName: true } } },
     });
   }
 
+  /** When an automatic provider that turned something down may be asked
+   * about it again. Long enough not to hammer anyone; short enough that
+   * something added to a source today is found today. */
+  private retryAt(): Date {
+    const hours = Number(process.env.ACQUISITION_RETRY_HOURS ?? 6);
+    return new Date(Date.now() + (hours > 0 ? hours : 6) * 3_600_000);
+  }
+
+  /**
+   * Put the outcome of a claim on the request. Whatever declined is written
+   * down for the admin; if anything that fetches declined, it is not asked
+   * again until the retry window has passed.
+   */
+  private async settle(
+    request: MediaRequest,
+    claim: Awaited<ReturnType<AcquisitionRegistry['claim']>>,
+  ) {
+    const why = claim.declined
+      .map((d) => `${d.name} declined: ${d.detail}`)
+      .join(' · ');
+    const retry = claim.declined.length ? this.retryAt() : null;
+
+    if (!claim.source || !claim.result) return this.shelve(request, why, retry);
+
+    const waiting = claim.source.automatic
+      ? ''
+      : 'No automatic source for this — waiting for a file.';
+    return this.applySource(
+      request,
+      claim.source.name,
+      claim.result,
+      [why, waiting, claim.result.detail].filter(Boolean).join(' · ') ||
+        undefined,
+      retry,
+    );
+  }
+
   /** Nothing can take this on today. It stays on the list all the same —
    * the family asked for it, and a provider configured tomorrow will pick
    * it up. The reason is written down where only an admin will read it. */
-  private async shelve(request: MediaRequest) {
+  private async shelve(
+    request: MediaRequest,
+    why = '',
+    retryAfter: Date | null = null,
+  ) {
     return this.prisma.mediaRequest.update({
       where: { id: request.id },
       data: {
         status: MediaStatus.REQUESTED,
         statusNote: 'On the list',
         source: null,
+        sourceRef: null,
+        retryAfter,
         adminNote:
-          'No automatic source currently available, and nothing is watching ' +
-          'for a file either.',
+          (why ? `${why} · ` : '') +
+          'No automatic source currently available, and nothing is ' +
+          'watching for a file either.',
       },
       include: { user: { select: { displayName: true } } },
     });
   }
 
   /**
-   * Requests nobody could take on when they were made. Asked about again
-   * each sweep, so switching a provider on picks up what is already waiting
-   * rather than needing everything asked for twice.
+   * Requests that are waiting, offered to something better. Runs every sweep.
+   *
+   * - nobody took it on: offered to everything, fetchers first
+   * - the watched folder took it on: offered to fetchers only. the folder
+   *   holds no state of its own, so nothing is lost if one takes it
+   * - a fetcher has it: left alone. two providers working on one film is
+   *   how you get two copies, and a different fetcher appearing is not a
+   *   reason to walk away from one that is working
+   * - ready to watch, or anything in progress: not touched at all
+   *
+   * A fetcher that declines is not asked again until the retry window has
+   * passed, so a film nobody has a free copy of costs one search, not one
+   * every sweep.
    */
-  async retryUnclaimed(): Promise<number> {
-    const waiting = await this.prisma.mediaRequest.findMany({
-      where: { status: MediaStatus.REQUESTED, source: null },
-      take: 25,
+  async reconsiderWaiting(): Promise<number> {
+    const now = Date.now();
+    const rows = await this.prisma.mediaRequest.findMany({
+      where: { status: { in: [MediaStatus.REQUESTED] } },
+      take: 50,
     });
-    let claimed = 0;
-    for (const row of waiting) {
-      const source = await this.sources.pickFor(row.kind);
-      if (!source) continue;
-      await this.applySource(
-        row,
-        source.name,
-        await this.sources.handOff(source, row),
-        source.automatic
-          ? undefined
-          : 'No automatic source for this — waiting for a file.',
-      );
-      claimed++;
+    let moved = 0;
+    for (const row of rows) {
+      if (row.status !== MediaStatus.REQUESTED) continue;
+      if (row.retryAfter && row.retryAfter.getTime() > now) continue;
+      const current = this.sources.byName(row.source);
+      if (current?.automatic) continue;
+
+      if (!row.source) {
+        const claim = await this.sources.claim(row.kind, row);
+        if (claim.source) moved++;
+        await this.settle(row, claim);
+        continue;
+      }
+
+      const better = await this.sources.claim(row.kind, row, {
+        automaticOnly: true,
+      });
+      if (better.source && better.result) {
+        this.log.log(
+          `${row.label}: moved from ${row.source} to ${better.source.name}`,
+        );
+        await this.applySource(
+          row,
+          better.source.name,
+          better.result,
+          `moved from ${row.source}` +
+            (better.result.detail ? ` · ${better.result.detail}` : ''),
+          null,
+        );
+        moved++;
+      } else if (better.declined.length) {
+        // still waiting on the folder; note why, and wait before asking again
+        await this.prisma.mediaRequest.update({
+          where: { id: row.id },
+          data: {
+            retryAfter: this.retryAt(),
+            adminNote:
+              better.declined
+                .map((d) => `${d.name} declined: ${d.detail}`)
+                .join(' · ') +
+              ' · No automatic source for this — waiting for a file.',
+          },
+        });
+      }
     }
-    return claimed;
+    return moved;
   }
 
   /**
@@ -643,6 +760,10 @@ export class MediaService {
    * progress out of start(), they are asked, and whatever they say is put
    * through the same rules — including the one about not being allowed to
    * call anything ready to watch.
+   *
+   * A fetch that fails does not write the request off. It goes back to
+   * waiting — on the folder if there is one — with the reason noted for the
+   * admin, and the fetcher is asked again after the retry window.
    */
   async pollProviders(): Promise<number> {
     const waiting = await this.prisma.mediaRequest.findMany({
@@ -654,6 +775,44 @@ export class MediaService {
       if (!source?.poll) continue;
       const result = await this.sources.pollFor(source, row);
       if (!result || result.status === row.status) continue;
+
+      if (result.status === MediaStatus.UNAVAILABLE) {
+        const failed = `${source.name} failed: ${result.detail ?? result.note}`;
+        this.log.warn(`${row.label}: ${failed}`);
+        // offered to anything else — never straight back to the one that
+        // just failed, which would only start the same fetch again. that
+        // one gets another go after the retry window, via the sweep
+        const fallback = await this.sources.claim(
+          row.kind,
+          { ...row, source: null, sourceRef: null },
+          { exclude: [source.name] },
+        );
+        await this.prisma.mediaRequest.update({
+          where: { id: row.id },
+          data: { sourceRef: null },
+        });
+        if (fallback.source && fallback.result) {
+          await this.applySource(
+            row,
+            fallback.source.name,
+            fallback.result,
+            [
+              failed,
+              fallback.source.automatic
+                ? ''
+                : 'No automatic source for this — waiting for a file.',
+            ]
+              .filter(Boolean)
+              .join(' · '),
+            this.retryAt(),
+          );
+        } else {
+          await this.shelve(row, failed, this.retryAt());
+        }
+        moved++;
+        continue;
+      }
+
       await this.applySource(row, source.name, result);
       moved++;
     }
